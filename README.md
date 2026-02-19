@@ -16,7 +16,7 @@ Or install globally:
 
 ```bash
 npm install -g grist-console
-grist-console https://docs.getgrist.com/your-doc-url
+grist-console https://templates.getgrist.com/5iMYwmESm33J/Rental-Management
 ```
 
 You can also pass `--api-key <key>` or set `GRIST_API_KEY`. Use `--table <name>` to jump straight to a specific table.
