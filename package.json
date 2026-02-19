@@ -1,0 +1,55 @@
+{
+  "name": "grist-console",
+  "version": "0.1.0",
+  "description": "Terminal UI for viewing and editing Grist documents",
+  "main": "dist/src/index.js",
+  "bin": {
+    "grist-console": "dist/src/index.js"
+  },
+  "files": [
+    "dist/src/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "tsc",
+    "test": "mocha dist/test/ConsoleClient.js",
+    "test:integration": "mocha --require dist/test/hooks.js --timeout 120000 dist/test/integration.js dist/test/quit.js",
+    "test:all": "yarn test && yarn test:integration",
+    "cli": "node dist/src/index.js",
+    "start": "node dist/src/index.js"
+  },
+  "keywords": [
+    "grist",
+    "spreadsheet",
+    "terminal",
+    "tui",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paulfitz/grist-console.git"
+  },
+  "homepage": "https://github.com/paulfitz/grist-console",
+  "bugs": "https://github.com/paulfitz/grist-console/issues",
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "node-fetch": "^2.7.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.0",
+    "@types/mocha": "^10.0.0",
+    "@types/node": "^18.0.0",
+    "@types/node-fetch": "^2.6.0",
+    "@types/ws": "^8.5.0",
+    "chai": "^4.3.0",
+    "mocha": "^10.0.0",
+    "typescript": "^5.0.0"
+  },
+  "license": "Apache-2.0"
+}
