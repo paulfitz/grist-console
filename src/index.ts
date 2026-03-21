@@ -12,7 +12,7 @@ import { getTheme, getThemeNames } from "./ConsoleTheme";
  *   https://server/doc/docId
  *   https://server/docId/slug
  */
-function parseGristDocUrl(urlStr: string): { serverUrl: string, docId: string } | null {
+export function parseGristDocUrl(urlStr: string): { serverUrl: string, docId: string, pageId?: number } | null {
   let url: URL;
   try {
     url = new URL(urlStr);
@@ -43,7 +43,14 @@ function parseGristDocUrl(urlStr: string): { serverUrl: string, docId: string } 
   // Strip fork/snapshot suffixes to get the base doc ID
   docId = docId.split("~")[0];
   const serverUrl = `${url.protocol}//${url.host}`;
-  return { serverUrl, docId };
+  // Extract page ID from /p/<pageId> suffix
+  let pageId: number | undefined;
+  const pIdx = rest.indexOf("p");
+  if (pIdx >= 0 && pIdx + 1 < rest.length) {
+    const parsed = parseInt(rest[pIdx + 1], 10);
+    if (!isNaN(parsed)) { pageId = parsed; }
+  }
+  return { serverUrl, docId, pageId };
 }
 
 const program = new Command();
@@ -67,6 +74,7 @@ program
     }
     let serverUrl: string;
     let docId: string;
+    let pageId: number | undefined;
     if (docIdArg) {
       serverUrl = urlOrServer;
       docId = docIdArg;
@@ -78,8 +86,12 @@ program
       }
       serverUrl = parsed.serverUrl;
       docId = parsed.docId;
+      pageId = parsed.pageId;
     }
-    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme });
+    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme, pageId });
   });
 
-program.parse();
+// Only run CLI when executed directly (not when imported for testing)
+if (require.main === module) {
+  program.parse();
+}

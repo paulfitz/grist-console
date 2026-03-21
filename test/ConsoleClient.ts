@@ -6,6 +6,7 @@ import {
 } from "../src/ConsoleLayout";
 import { createInitialState, render, PaneState } from "../src/ConsoleRenderer";
 import { handleKeypress } from "../src/ConsoleInput";
+import { parseGristDocUrl } from "../src/index";
 import { GristObjCode } from "../src/types";
 
 import { assert } from "chai";
@@ -766,6 +767,54 @@ describe("ConsoleClient", function() {
       const output = render(state);
       assert.include(output, "My Chart");
       assert.include(output, "chart not supported");
+    });
+  });
+
+  describe("parseGristDocUrl", function() {
+    it("parses standard doc URL", function() {
+      const result = parseGristDocUrl("https://docs.getgrist.com/hQHXqAQXceeQ/My-Doc");
+      assert.equal(result?.serverUrl, "https://docs.getgrist.com");
+      assert.equal(result?.docId, "hQHXqAQXceeQ");
+      assert.isUndefined(result?.pageId);
+    });
+
+    it("parses URL with page", function() {
+      const result = parseGristDocUrl("https://templates.getgrist.com/hQHXqAQXceeQ/Personal-Notebook/p/32");
+      assert.deepEqual(result, { serverUrl: "https://templates.getgrist.com", docId: "hQHXqAQXceeQ", pageId: 32 });
+    });
+
+    it("parses /doc/ form with page", function() {
+      const result = parseGristDocUrl("https://myserver.com/doc/abc123def456/p/5");
+      assert.deepEqual(result, { serverUrl: "https://myserver.com", docId: "abc123def456", pageId: 5 });
+    });
+
+    it("parses /o/org/ prefix with page", function() {
+      const result = parseGristDocUrl("https://docs.getgrist.com/o/myorg/doc/abc123def456/p/12");
+      assert.deepEqual(result, { serverUrl: "https://docs.getgrist.com", docId: "abc123def456", pageId: 12 });
+    });
+
+    it("returns no pageId when no /p/ suffix", function() {
+      const result = parseGristDocUrl("https://docs.getgrist.com/hQHXqAQXceeQ/My-Doc");
+      assert.isUndefined(result?.pageId);
+    });
+
+    it("parses /p/1 (page 1)", function() {
+      const result = parseGristDocUrl("https://docs.getgrist.com/hQHXqAQXceeQ/slug/p/1");
+      assert.equal(result?.pageId, 1);
+    });
+
+    it("strips fork suffixes", function() {
+      const result = parseGristDocUrl("https://docs.getgrist.com/hQHXqAQXceeQ~fork123/slug/p/7");
+      assert.equal(result?.docId, "hQHXqAQXceeQ");
+      assert.equal(result?.pageId, 7);
+    });
+
+    it("returns null for invalid URL", function() {
+      assert.isNull(parseGristDocUrl("not-a-url"));
+    });
+
+    it("returns null for URL with no doc ID", function() {
+      assert.isNull(parseGristDocUrl("https://docs.getgrist.com/"));
     });
   });
 });

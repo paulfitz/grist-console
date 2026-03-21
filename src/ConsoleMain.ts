@@ -20,6 +20,7 @@ export async function consoleMain(options: {
   apiKey?: string;
   table?: string;
   theme?: Theme;
+  pageId?: number;
 }): Promise<void> {
   const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey);
   const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
@@ -54,6 +55,19 @@ export async function consoleMain(options: {
     state.currentTableId = options.table;
     await loadTable(state, conn);
     state.mode = "grid";
+  } else if (options.pageId && state.pages.length > 0) {
+    // Open the page specified in the URL (/p/NN)
+    const pageIdx = state.pages.findIndex(p => p.pageId === options.pageId);
+    if (pageIdx >= 0) {
+      const page = state.pages[pageIdx];
+      state.selectedPageIndex = pageIdx;
+      state.currentPageId = page.pageId;
+      await loadPage(state, conn, page.viewId);
+      state.mode = "grid";
+    } else {
+      state.statusMessage = `Page ${options.pageId} not found`;
+      state.mode = "page_picker";
+    }
   } else if (state.pages.length > 0) {
     // Default to page picker if pages exist
     state.mode = "page_picker";
