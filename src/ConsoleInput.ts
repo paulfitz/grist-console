@@ -39,7 +39,8 @@ export type InputAction =
   | { type: "switch_to_tables" }
   | { type: "switch_to_pages" }
   | { type: "focus_next_pane" }
-  | { type: "focus_prev_pane" };
+  | { type: "focus_prev_pane" }
+  | { type: "cycle_theme" };
 
 /**
  * Parse a raw keypress buffer into a key name.
@@ -96,6 +97,8 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "enter":
       return { type: "select_table" };
+    case "T":
+      return { type: "cycle_theme" };
     case "q":
     case "ctrl-c":
       return { type: "quit" };
@@ -181,6 +184,8 @@ function handleGridKey(key: string, state: AppState): InputAction {
       return { type: "refresh" };
     case "t":
       return { type: "switch_to_tables" };
+    case "T":
+      return { type: "cycle_theme" };
     case "q":
     case "ctrl-c":
       return { type: "quit" };
@@ -291,6 +296,8 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
       return { type: "select_page" };
     case "t":
       return { type: "switch_to_tables" };
+    case "T":
+      return { type: "cycle_theme" };
     case "q":
     case "ctrl-c":
       return { type: "quit" };
@@ -388,6 +395,8 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
       return { type: "switch_to_pages" };
     case "t":
       return { type: "switch_to_tables" };
+    case "T":
+      return { type: "cycle_theme" };
     case "q":
     case "ctrl-c":
       return { type: "quit" };
@@ -481,6 +490,8 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
       return { type: "switch_to_pages" };
     case "t":
       return { type: "switch_to_tables" };
+    case "T":
+      return { type: "cycle_theme" };
     case "q":
     case "ctrl-c":
       return { type: "quit" };

@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { consoleMain } from "./ConsoleMain";
+import { getTheme, getThemeNames } from "./ConsoleTheme";
 
 /**
  * Parse a Grist document URL into server URL and doc ID.
@@ -53,9 +54,17 @@ program
   .argument("[doc-id]", "Document ID (when first arg is a server URL)")
   .option("--api-key <key>", "API key (or set GRIST_API_KEY env var)")
   .option("--table <table>", "open this table directly (skip table picker)")
+  .option(`--theme <name>`, `color theme (${getThemeNames().join(", ")})`, "default")
   .action(async (urlOrServer: string, docIdArg: string | undefined,
-                 options: { apiKey?: string, table?: string }) => {
+                 options: { apiKey?: string, table?: string, theme?: string }) => {
     const apiKey = options.apiKey || process.env.GRIST_API_KEY;
+    let theme;
+    try {
+      theme = getTheme(options.theme || "default");
+    } catch (e: any) {
+      console.error(e.message);
+      process.exit(1);
+    }
     let serverUrl: string;
     let docId: string;
     if (docIdArg) {
@@ -70,7 +79,7 @@ program
       serverUrl = parsed.serverUrl;
       docId = parsed.docId;
     }
-    await consoleMain({ serverUrl, docId, apiKey, table: options.table });
+    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme });
   });
 
 program.parse();

@@ -1,16 +1,23 @@
 import { BulkColValues, ColumnInfo } from "./types";
 import { formatCellValue } from "./ConsoleCellFormat";
 import { BoxSpec, LayoutNode, PageInfo, SectionInfo, collectLeaves } from "./ConsoleLayout";
+import { Theme, defaultTheme } from "./ConsoleTheme";
 
-// ANSI escape codes
+// ANSI escape codes (non-stylistic, always needed)
 const ESC = "\x1b[";
-const RESET = `${ESC}0m`;
-const BOLD = `${ESC}1m`;
-const REVERSE = `${ESC}7m`;
 const CLEAR_SCREEN = `${ESC}2J`;
 const MOVE_TO = (row: number, col: number) => `${ESC}${row + 1};${col + 1}H`;
 const HIDE_CURSOR = `${ESC}?25l`;
 const SHOW_CURSOR = `${ESC}?25h`;
+
+/**
+ * Build the screen preamble: hide cursor, set background color, clear screen.
+ * For themes with a screenBg (e.g. blue background), the bg SGR is set before
+ * clearing so the entire terminal fills with that color.
+ */
+function screenPreamble(t: Theme): string {
+  return HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN + MOVE_TO(0, 0);
+}
 
 export type AppMode = "table_picker" | "page_picker" | "grid" | "editing" | "confirm_delete";
 
@@ -51,9 +58,11 @@ export interface AppState {
   layout: LayoutNode | null;
   boxSpec: BoxSpec | null;
   focusedPane: number;
+  // Theme
+  theme: Theme;
 }
 
-export function createInitialState(docId: string): AppState {
+export function createInitialState(docId: string, theme?: Theme): AppState {
   return {
     mode: "table_picker",
     tableIds: [],
@@ -78,6 +87,8 @@ export function createInitialState(docId: string): AppState {
     layout: null,
     boxSpec: null,
     focusedPane: 0,
+    // Theme
+    theme: theme || defaultTheme,
   };
 }
 
@@ -148,11 +159,12 @@ export function render(state: AppState): string {
 }
 
 function renderTablePicker(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
   const lines: string[] = [];
 
   // Title bar
-  const title = ` Grist Console \u2014 Select a Table `;
-  lines.push(REVERSE + padRight(title, termCols) + RESET);
+  const title = t.pickerTitleFormat("Select a Table");
+  lines.push(t.titleBar(padRight(title, termCols)));
 
   // Empty line
   lines.push("");
@@ -162,7 +174,7 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   for (let i = 0; i < visibleCount; i++) {
     const tid = state.tableIds[i];
     if (i === state.selectedTableIndex) {
-      lines.push(`  ${REVERSE} > ${tid} ${RESET}`);
+      lines.push(`  ${t.pickerSelected(` > ${tid} `)}`);
     } else {
       lines.push(`    ${tid}`);
     }
@@ -174,52 +186,57 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   }
 
   // Key help
-  lines.push(`${BOLD}\u2191\u2193:select  Enter:open  q:quit${RESET}`);
+  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  T:theme  q:quit"));
 
   // Status
   lines.push(state.statusMessage || "");
 
-  return HIDE_CURSOR + CLEAR_SCREEN + MOVE_TO(0, 0) + lines.join("\n");
+  return screenPreamble(t) + lines.join("\n");
 }
 
 function renderGrid(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
   const lines: string[] = [];
   const layout = computeColLayout(state);
   const maxRowId = state.rowIds.length > 0 ? Math.max(...state.rowIds) : 0;
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
   // Determine visible columns based on scrollCol and terminal width
-  let availWidth = termCols - rowNumWidth - 1; // 1 for the leading border
+  let availWidth = termCols - rowNumWidth;
   const visibleCols: number[] = [];
-  for (let c = state.scrollCol; c < layout.length && availWidth > 0; c++) {
+  for (let c = state.scrollCol; c < layout.length; c++) {
+    const needed = layout[c].width + t.colSeparator.length;
+    if (needed > availWidth) { break; }
     visibleCols.push(c);
-    availWidth -= layout[c].width + 3; // 3 for " | " separator
+    availWidth -= needed;
   }
 
   // Determine visible rows
-  const headerRows = 3; // title, headers, separator
+  const headerRows = t.headerSepLine ? 3 : 2; // title, headers, [separator]
   const footerRows = 2; // help, status
   const dataRows = Math.max(1, termRows - headerRows - footerRows);
 
   // Title bar
   const rowCount = state.rowIds.length;
-  const title = ` Grist Console \u2014 ${state.currentTableId} (${rowCount} ${rowCount === 1 ? "row" : "rows"}) `;
-  lines.push(REVERSE + padRight(title, termCols) + RESET);
+  const detail = `(${rowCount} ${rowCount === 1 ? "row" : "rows"})`;
+  const title = t.titleFormat(state.currentTableId, detail);
+  lines.push(t.titleBar(padRight(title, termCols)));
 
   // Column headers
-  let headerLine = BOLD + padLeft("#", rowNumWidth);
+  let headerContent = padLeft("#", rowNumWidth);
   for (const ci of visibleCols) {
-    headerLine += " \u2502 " + padRight(truncate(layout[ci].label, layout[ci].width), layout[ci].width);
+    headerContent += t.headerSeparator + padRight(truncate(layout[ci].label, layout[ci].width), layout[ci].width);
   }
-  headerLine += RESET;
-  lines.push(headerLine);
+  lines.push(t.columnHeader(headerContent));
 
-  // Separator
-  let sepLine = "\u2500".repeat(rowNumWidth);
-  for (const ci of visibleCols) {
-    sepLine += "\u2500\u253c\u2500" + "\u2500".repeat(layout[ci].width);
+  // Separator (optional)
+  if (t.headerSepLine) {
+    let sepLine = t.rowSepChar.repeat(rowNumWidth);
+    for (const ci of visibleCols) {
+      sepLine += t.rowSepChar + t.crossChar + t.rowSepChar + t.rowSepChar.repeat(layout[ci].width);
+    }
+    lines.push(sepLine);
   }
-  lines.push(sepLine);
 
   // Data rows
   for (let r = 0; r < dataRows; r++) {
@@ -229,7 +246,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       continue;
     }
     const rowId = state.rowIds[rowIdx];
-    let line = padLeft(String(rowId), rowNumWidth);
+    let line = t.rowNumber(padLeft(String(rowId), rowNumWidth));
     for (const ci of visibleCols) {
       const col = layout[ci];
       const colType = state.columns[ci]?.type || "Text";
@@ -242,13 +259,12 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       const isCurrentCell = (rowIdx === state.cursorRow && ci === state.cursorCol);
 
       if (state.mode === "editing" && isCurrentCell) {
-        // Show edit buffer
         const editDisplay = padRight(truncate(state.editValue, col.width), col.width);
-        line += " \u2502 " + REVERSE + editDisplay + RESET;
+        line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
-        line += " \u2502 " + REVERSE + formatted + RESET;
+        line += t.colSeparator + t.cursor(formatted);
       } else {
-        line += " \u2502 " + formatted;
+        line += t.colSeparator + formatted;
       }
     }
     lines.push(line);
@@ -261,24 +277,25 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
 
   // Key help
   if (state.mode === "editing") {
-    lines.push(`${BOLD}Type to edit  Enter:save  Esc:cancel${RESET}`);
+    lines.push(t.helpBar("Type to edit  Enter:save  Esc:cancel"));
   } else if (state.mode === "confirm_delete") {
-    lines.push(`${BOLD}Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel${RESET}`);
+    lines.push(t.helpBar(`Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
-    lines.push(`${BOLD}\u2191\u2193\u2190\u2192:move  Enter:edit  a:add  d:delete  t:tables  r:refresh  q:quit${RESET}`);
+    lines.push(t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  a:add  d:del  t:tables  T:theme  q:quit"));
   }
 
   // Status
   lines.push(state.statusMessage || "");
 
-  return HIDE_CURSOR + CLEAR_SCREEN + MOVE_TO(0, 0) + lines.join("\n");
+  return screenPreamble(t) + lines.join("\n");
 }
 
 function renderPagePicker(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
   const lines: string[] = [];
 
-  const title = ` Grist Console \u2014 Select a Page `;
-  lines.push(REVERSE + padRight(title, termCols) + RESET);
+  const title = t.pickerTitleFormat("Select a Page");
+  lines.push(t.titleBar(padRight(title, termCols)));
   lines.push("");
 
   const visibleCount = Math.min(state.pages.length, termRows - 5);
@@ -286,7 +303,7 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
     const page = state.pages[i];
     const indent = "  ".repeat(page.indentation);
     if (i === state.selectedPageIndex) {
-      lines.push(`  ${REVERSE} > ${indent}${page.name} ${RESET}`);
+      lines.push(`  ${t.pickerSelected(` > ${indent}${page.name} `)}`);
     } else {
       lines.push(`    ${indent}${page.name}`);
     }
@@ -296,15 +313,14 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
     lines.push("");
   }
 
-  lines.push(`${BOLD}\u2191\u2193:select  Enter:open  t:tables  q:quit${RESET}`);
+  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  t:tables  T:theme  q:quit"));
   lines.push(state.statusMessage || "");
 
-  return HIDE_CURSOR + CLEAR_SCREEN + MOVE_TO(0, 0) + lines.join("\n");
+  return screenPreamble(t) + lines.join("\n");
 }
 
-const DIM = `${ESC}2m`;
-
 function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
   // Build a character buffer for the whole screen
   const buf: string[][] = [];
   for (let r = 0; r < termRows - 2; r++) {
@@ -314,7 +330,7 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
   const leaves = collectLeaves(state.layout!);
 
   // Draw borders between split children
-  drawBorders(state.layout!, buf, termCols, termRows - 2);
+  drawBorders(state.layout!, buf, termCols, termRows - 2, t);
 
   // Draw each pane
   for (const leaf of leaves) {
@@ -322,11 +338,11 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
     const pane = state.panes[leaf.paneIndex];
     if (!pane) { continue; }
     const isFocused = leaf.paneIndex === state.focusedPane;
-    renderPaneInto(buf, leaf, pane, isFocused, state.mode, state.editValue);
+    renderPaneInto(buf, leaf, pane, isFocused, state.mode, state.editValue, t);
   }
 
   // Flatten buffer to string with ANSI positioning
-  let output = HIDE_CURSOR + CLEAR_SCREEN;
+  let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
   for (let r = 0; r < buf.length; r++) {
     output += MOVE_TO(r, 0) + buf[r].join("");
   }
@@ -334,16 +350,16 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
   // Footer: help and status
   const footerRow = termRows - 2;
   if (state.mode === "editing") {
-    output += MOVE_TO(footerRow, 0) + BOLD +
-      "Type to edit  Enter:save  Esc:cancel" + RESET;
+    output += MOVE_TO(footerRow, 0) +
+      t.helpBar("Type to edit  Enter:save  Esc:cancel");
   } else if (state.mode === "confirm_delete") {
     const pane = state.panes[state.focusedPane];
     const rowId = pane ? pane.rowIds[pane.cursorRow] : "?";
-    output += MOVE_TO(footerRow, 0) + BOLD +
-      `Delete row ${rowId}? y:confirm  n/Esc:cancel` + RESET;
+    output += MOVE_TO(footerRow, 0) +
+      t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`);
   } else {
-    output += MOVE_TO(footerRow, 0) + BOLD +
-      "\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  q:quit" + RESET;
+    output += MOVE_TO(footerRow, 0) +
+      t.helpBar("\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  T:theme  q:quit");
   }
   output += MOVE_TO(termRows - 1, 0) + (state.statusMessage || "");
 
@@ -352,18 +368,18 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
 
 function renderPaneInto(
   buf: string[][], leaf: LayoutNode, pane: PaneState,
-  isFocused: boolean, mode: AppMode, editValue: string,
+  isFocused: boolean, mode: AppMode, editValue: string, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
   if (width < 3 || height < 2) { return; }
 
   const pk = pane.sectionInfo.parentKey;
   if (pk === "single" || pk === "detail") {
-    renderCardPaneInto(buf, leaf, pane, isFocused, mode, editValue);
+    renderCardPaneInto(buf, leaf, pane, isFocused, mode, editValue, t);
     return;
   }
   if (pk === "chart") {
-    renderChartPlaceholder(buf, leaf, pane, isFocused);
+    renderChartPlaceholder(buf, leaf, pane, isFocused, t);
     return;
   }
 
@@ -377,42 +393,48 @@ function renderPaneInto(
   const titleText = ` ${tableName} (${rowCount}) `;
   const titleLine = truncate(titleText, width);
   const titleStyled = isFocused
-    ? REVERSE + padRight(titleLine, width) + RESET
-    : DIM + REVERSE + padRight(titleLine, width) + RESET;
+    ? t.titleBar(padRight(titleLine, width))
+    : t.titleBarDim(padRight(titleLine, width));
   writeToBuffer(buf, top, left, titleStyled, width);
 
-  if (height < 4) { return; }
+  const minHeight = t.headerSepLine ? 4 : 3;
+  if (height < minHeight) { return; }
 
   // Determine visible columns
-  let availWidth = width - rowNumWidth - 1;
+  let availWidth = width - rowNumWidth;
   const visibleCols: number[] = [];
-  for (let c = pane.scrollCol; c < layout.length && availWidth > 0; c++) {
+  for (let c = pane.scrollCol; c < layout.length; c++) {
+    const needed = layout[c].width + t.colSeparator.length;
+    if (needed > availWidth) { break; }
     visibleCols.push(c);
-    availWidth -= layout[c].width + 3;
+    availWidth -= needed;
   }
 
   // Column headers (row 1)
-  let headerLine = BOLD + padLeft("#", rowNumWidth);
+  let headerContent = padLeft("#", rowNumWidth);
   for (const ci of visibleCols) {
-    headerLine += " \u2502 " + padRight(truncate(layout[ci].label, layout[ci].width), layout[ci].width);
+    headerContent += t.headerSeparator + padRight(truncate(layout[ci].label, layout[ci].width), layout[ci].width);
   }
-  headerLine += RESET;
-  writeToBuffer(buf, top + 1, left, headerLine, width);
+  writeToBuffer(buf, top + 1, left, t.columnHeader(headerContent), width);
 
-  // Separator (row 2)
-  let sepLine = "\u2500".repeat(rowNumWidth);
-  for (const ci of visibleCols) {
-    sepLine += "\u2500\u253c\u2500" + "\u2500".repeat(layout[ci].width);
+  // Separator (row 2, optional)
+  let dataStartRow = top + 2;
+  if (t.headerSepLine) {
+    let sepLine = t.rowSepChar.repeat(rowNumWidth);
+    for (const ci of visibleCols) {
+      sepLine += t.rowSepChar + t.crossChar + t.rowSepChar + t.rowSepChar.repeat(layout[ci].width);
+    }
+    writeToBuffer(buf, top + 2, left, sepLine, width);
+    dataStartRow = top + 3;
   }
-  writeToBuffer(buf, top + 2, left, sepLine, width);
 
-  // Data rows (row 3+)
-  const dataRows = Math.max(0, height - 3);
+  // Data rows
+  const dataRows = Math.max(0, height - (dataStartRow - top));
   for (let r = 0; r < dataRows; r++) {
     const rowIdx = pane.scrollRow + r;
     if (rowIdx >= pane.rowIds.length) { break; }
     const rowId = pane.rowIds[rowIdx];
-    let line = padLeft(String(rowId), rowNumWidth);
+    let line = t.rowNumber(padLeft(String(rowId), rowNumWidth));
     for (const ci of visibleCols) {
       const col = layout[ci];
       const colType = pane.columns[ci]?.type || "Text";
@@ -426,14 +448,14 @@ function renderPaneInto(
 
       if (mode === "editing" && isCurrentCell) {
         const editDisplay = padRight(truncate(editValue, col.width), col.width);
-        line += " \u2502 " + REVERSE + editDisplay + RESET;
+        line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
-        line += " \u2502 " + REVERSE + formatted + RESET;
+        line += t.colSeparator + t.cursor(formatted);
       } else {
-        line += " \u2502 " + formatted;
+        line += t.colSeparator + formatted;
       }
     }
-    writeToBuffer(buf, top + 3 + r, left, line, width);
+    writeToBuffer(buf, dataStartRow + r, left, line, width);
   }
 }
 
@@ -444,7 +466,7 @@ function renderPaneInto(
  */
 function renderCardPaneInto(
   buf: string[][], leaf: LayoutNode, pane: PaneState,
-  isFocused: boolean, mode: AppMode, editValue: string,
+  isFocused: boolean, mode: AppMode, editValue: string, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
 
@@ -455,8 +477,8 @@ function renderCardPaneInto(
   const titleText = ` ${tableName} (${recNum}/${rowCount}) `;
   const titleLine = truncate(titleText, width);
   const titleStyled = isFocused
-    ? REVERSE + padRight(titleLine, width) + RESET
-    : DIM + REVERSE + padRight(titleLine, width) + RESET;
+    ? t.titleBar(padRight(titleLine, width))
+    : t.titleBarDim(padRight(titleLine, width));
   writeToBuffer(buf, top, left, titleStyled, width);
 
   if (height < 3 || rowCount === 0) { return; }
@@ -466,7 +488,8 @@ function renderCardPaneInto(
     Math.max(6, ...pane.columns.map(c => c.label.length)),
     Math.floor(width / 3),
   );
-  const valueWidth = Math.max(4, width - labelWidth - 3); // " : " separator
+  const cardSep = t.colSeparator;
+  const valueWidth = Math.max(4, width - labelWidth - cardSep.length);
 
   // Show fields for the current record, starting from scrollCol
   const fieldRows = height - 1; // rows available below title
@@ -484,12 +507,11 @@ function renderCardPaneInto(
     let line: string;
     if (mode === "editing" && isCurrentField) {
       const editDisplay = padRight(truncate(editValue, valueWidth), valueWidth);
-      line = DIM + label + RESET + " \u2502 " + REVERSE + editDisplay + RESET;
+      line = t.fieldLabel(label) + cardSep + t.cursor(editDisplay);
     } else if (isCurrentField) {
-      line = BOLD + label + RESET + " \u2502 " + REVERSE +
-        padRight(formatted, valueWidth) + RESET;
+      line = t.fieldLabelActive(label) + cardSep + t.cursor(padRight(formatted, valueWidth));
     } else {
-      line = DIM + label + RESET + " \u2502 " + padRight(formatted, valueWidth);
+      line = t.fieldLabel(label) + cardSep + padRight(formatted, valueWidth);
     }
     writeToBuffer(buf, top + 1 + f, left, line, width);
   }
@@ -499,7 +521,7 @@ function renderCardPaneInto(
  * Render a placeholder for chart sections (not renderable in terminal).
  */
 function renderChartPlaceholder(
-  buf: string[][], leaf: LayoutNode, pane: PaneState, isFocused: boolean,
+  buf: string[][], leaf: LayoutNode, pane: PaneState, isFocused: boolean, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
 
@@ -507,8 +529,8 @@ function renderChartPlaceholder(
   const titleText = ` ${tableName} [chart] `;
   const titleLine = truncate(titleText, width);
   const titleStyled = isFocused
-    ? REVERSE + padRight(titleLine, width) + RESET
-    : DIM + REVERSE + padRight(titleLine, width) + RESET;
+    ? t.titleBar(padRight(titleLine, width))
+    : t.titleBarDim(padRight(titleLine, width));
   writeToBuffer(buf, top, left, titleStyled, width);
 
   if (height >= 3) {
@@ -554,7 +576,7 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRows: number): void {
+function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRows: number, t: Theme): void {
   if (!node.children || node.children.length < 2) { return; }
 
   for (let i = 0; i < node.children.length - 1; i++) {
@@ -566,7 +588,7 @@ function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRo
       if (borderRow >= 0 && borderRow < termRows) {
         for (let c = node.left; c < Math.min(node.left + node.width, termCols); c++) {
           if (buf[borderRow] && c < buf[borderRow].length) {
-            buf[borderRow][c] = "\u2500";
+            buf[borderRow][c] = t.borderHoriz;
           }
         }
       }
@@ -576,7 +598,7 @@ function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRo
       if (borderCol >= 0 && borderCol < termCols) {
         for (let r = node.top; r < Math.min(node.top + node.height, termRows); r++) {
           if (buf[r] && borderCol < buf[r].length) {
-            buf[r][borderCol] = "\u2502";
+            buf[r][borderCol] = t.borderVert;
           }
         }
       }
@@ -585,7 +607,7 @@ function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRo
 
   // Recurse into children
   for (const child of node.children) {
-    drawBorders(child, buf, termCols, termRows);
+    drawBorders(child, buf, termCols, termRows, t);
   }
 }
 

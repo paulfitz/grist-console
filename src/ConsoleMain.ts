@@ -9,6 +9,7 @@ import {
   parseLayoutSpec, computeLayout,
   getColIdByRef as layoutGetColIdByRef, Rect,
 } from "./ConsoleLayout";
+import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme";
 
 /**
  * Main entry point for the console client.
@@ -18,9 +19,10 @@ export async function consoleMain(options: {
   docId: string;
   apiKey?: string;
   table?: string;
+  theme?: Theme;
 }): Promise<void> {
   const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey);
-  const state: AppState = createInitialState(options.docId);
+  const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
 
   // Connect
   process.stdout.write("Connecting...\n");
@@ -198,6 +200,13 @@ export async function consoleMain(options: {
           }
           doRender(state);
           break;
+        case "cycle_theme": {
+          const next = cycleTheme(state.theme);
+          state.theme = next.theme;
+          state.statusMessage = `Theme: ${next.name}`;
+          doRender(state);
+          break;
+        }
         case "none":
           break;
       }
@@ -422,7 +431,7 @@ function doRender(state: AppState): void {
 
 function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void): void {
   process.stdout.write(showCursor());
-  process.stdout.write("\x1b[2J\x1b[H");
+  process.stdout.write("\x1b[0m\x1b[2J\x1b[H");
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }
