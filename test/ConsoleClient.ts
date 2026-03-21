@@ -39,6 +39,54 @@ describe("ConsoleClient", function() {
         assert.match(result, /2024-01-1[01]/);
       });
 
+      it("formats bare numeric timestamps as dates when colType provided", function() {
+        // 1704844800 = 2024-01-10 midnight UTC
+        assert.equal(formatCellValue(1704844800, "Date"), "2024-01-10");
+        assert.match(formatCellValue(1704945919, "DateTime"), /2024-01-1[01]/);
+        // Without colType, shows raw number
+        assert.equal(formatCellValue(1704844800), "1704844800");
+        // Zero treated as empty for dates
+        assert.equal(formatCellValue(0, "Date"), "");
+        assert.equal(formatCellValue(0, "DateTime"), "");
+        // Regular numbers unaffected even with colType
+        assert.equal(formatCellValue(42, "Int"), "42");
+        assert.equal(formatCellValue(3.14, "Numeric"), "3.14");
+      });
+
+      it("formats numbers with widget options", function() {
+        // Currency
+        assert.equal(formatCellValue(1234.5, "Numeric", { numMode: "currency", currency: "USD" }), "$1,234.50");
+        // Percent
+        assert.equal(formatCellValue(0.75, "Numeric", { numMode: "percent" }), "75%");
+        // Fixed decimals
+        assert.equal(formatCellValue(42, "Numeric", { decimals: 2, maxDecimals: 2 }), "42.00");
+        // Without widget options, plain number
+        assert.equal(formatCellValue(1234.5, "Numeric"), "1234.5");
+      });
+
+      it("formats dates with custom dateFormat", function() {
+        // 1704844800 = 2024-01-10 midnight UTC
+        assert.equal(formatCellValue(1704844800, "Date", { dateFormat: "MM/DD/YYYY" }), "01/10/2024");
+        assert.equal(formatCellValue(1704844800, "Date", { dateFormat: "DD MMM YYYY" }), "10 Jan 2024");
+        // Default ISO format without widget options
+        assert.equal(formatCellValue(1704844800, "Date"), "2024-01-10");
+      });
+
+      it("formats Reference with display values", function() {
+        const dv = new Map([[17, "Alice"], [5, "Bob"]]);
+        assert.equal(formatCellValue([GristObjCode.Reference, "People", 17], undefined, undefined, dv), "Alice");
+        assert.equal(formatCellValue([GristObjCode.Reference, "People", 99], undefined, undefined, dv), "99");
+        assert.equal(formatCellValue(17, "Ref:People", undefined, dv), "Alice");
+        assert.equal(formatCellValue(0, "Ref:People", undefined, dv), "");
+      });
+
+      it("formats ReferenceList with display values", function() {
+        const dv = new Map([[1, "X"], [2, "Y"], [3, "Z"]]);
+        assert.equal(formatCellValue([GristObjCode.ReferenceList, "T", [1, 3]], undefined, undefined, dv), "X, Z");
+        // Falls back to IDs for unknown rows
+        assert.equal(formatCellValue([GristObjCode.ReferenceList, "T", [1, 99]], undefined, undefined, dv), "X, 99");
+      });
+
       it("formats Reference values", function() {
         assert.equal(formatCellValue([GristObjCode.Reference, "People", 17]), "17");
         assert.equal(formatCellValue([GristObjCode.Reference, "People", 0]), "");

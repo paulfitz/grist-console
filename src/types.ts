@@ -74,6 +74,9 @@ export interface ColumnInfo {
   colId: string;
   type: string;
   label: string;
+  widgetOptions?: Record<string, any>;
+  visibleCol?: number;  // colRef for Ref/RefList display column
+  displayValues?: Map<number, string>;  // rowId → display string for Ref/RefList
 }
 
 /** Whether a column is internal and should be hidden. */

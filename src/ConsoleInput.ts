@@ -198,7 +198,7 @@ function enterEditMode(state: AppState): void {
   const col = state.columns[state.cursorCol];
   const values = state.colValues[col.colId];
   const currentValue = values ? values[state.cursorRow] : null;
-  state.editValue = formatCellValue(currentValue);
+  state.editValue = formatCellValue(currentValue, col.type, col.widgetOptions, col.displayValues);
   state.editCursorPos = state.editValue.length;
   state.mode = "editing";
 }
@@ -506,7 +506,7 @@ function enterPaneEditMode(state: AppState): void {
   const col = pane.columns[pane.cursorCol];
   const values = pane.colValues[col.colId];
   const currentValue = values ? values[pane.cursorRow] : null;
-  state.editValue = formatCellValue(currentValue);
+  state.editValue = formatCellValue(currentValue, col.type, col.widgetOptions, col.displayValues);
   state.editCursorPos = state.editValue.length;
   state.mode = "editing";
 }

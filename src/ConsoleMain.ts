@@ -1,4 +1,4 @@
-import { BulkColValues, DocAction } from "./types";
+import { BulkColValues, ColumnInfo, DocAction } from "./types";
 import { ConsoleConnection } from "./ConsoleConnection";
 import { AppState, PaneState, createInitialState, render, showCursor } from "./ConsoleRenderer";
 import {
@@ -6,7 +6,7 @@ import {
 } from "./ConsoleInput";
 import {
   extractPages, extractSectionsForView, getLayoutSpecForView,
-  parseLayoutSpec, computeLayout,
+  parseLayoutSpec, computeLayout, getColumnInfo,
   getColIdByRef as layoutGetColIdByRef, Rect,
 } from "./ConsoleLayout";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme";
@@ -237,6 +237,42 @@ async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void
   state.cursorCol = 0;
   state.scrollRow = 0;
   state.scrollCol = 0;
+  await resolveDisplayValues(state.columns, conn);
+}
+
+/**
+ * For Ref/RefList columns with a visibleCol, fetch the referenced table
+ * and build a rowId → display string mapping.
+ */
+async function resolveDisplayValues(columns: ColumnInfo[], conn: ConsoleConnection): Promise<void> {
+  const metaTables = conn.getMetaTables();
+  for (const col of columns) {
+    const baseType = col.type.split(":")[0];
+    if ((baseType !== "Ref" && baseType !== "RefList") || !col.visibleCol) {
+      continue;
+    }
+    const refTableId = col.type.split(":").slice(1).join(":");
+    if (!refTableId) { continue; }
+
+    // Resolve visibleCol ref to a colId
+    const visColInfo = getColumnInfo(metaTables, col.visibleCol);
+    if (!visColInfo) { continue; }
+
+    try {
+      const refData = await conn.fetchTable(refTableId);
+      const displayCol = refData.colValues[visColInfo.colId];
+      if (!displayCol) { continue; }
+
+      const displayMap = new Map<number, string>();
+      for (let i = 0; i < refData.rowIds.length; i++) {
+        const val = displayCol[i];
+        displayMap.set(refData.rowIds[i], val == null ? "" : String(val));
+      }
+      col.displayValues = displayMap;
+    } catch {
+      // Referenced table might not be accessible; fall back to row IDs
+    }
+  }
 }
 
 /**
@@ -268,6 +304,7 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
 
   for (const sec of sections) {
     const columns = conn.getColumnsForSection(sec.sectionId);
+    await resolveDisplayValues(columns, conn);
     const tableData = tableDataCache.get(sec.tableId)!;
     const paneIndex = panes.length;
     sectionIdToPaneIndex.set(sec.sectionId, paneIndex);

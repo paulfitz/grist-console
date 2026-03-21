@@ -229,16 +229,27 @@ export class ConsoleConnection {
     const colIds: string[] = columnsData[3].colId;
     const colTypes: string[] = columnsData[3].type;
     const colLabels: string[] = columnsData[3].label;
+    const colWidgetOptions: string[] = columnsData[3].widgetOptions || [];
+    const colVisibleCols: number[] = columnsData[3].visibleCol || [];
 
     const columns: ColumnInfo[] = [];
     for (let i = 0; i < colParentIds.length; i++) {
       if (colParentIds[i] === tableRef) {
         const colId = colIds[i];
         if (!isHiddenCol(colId)) {
+          let widgetOptions: Record<string, any> | undefined;
+          try {
+            if (colWidgetOptions[i]) {
+              widgetOptions = JSON.parse(colWidgetOptions[i]);
+            }
+          } catch { /* ignore invalid JSON */ }
+          const visibleCol = colVisibleCols[i];
           columns.push({
             colId,
             type: colTypes[i],
             label: colLabels[i] || colId,
+            widgetOptions,
+            visibleCol: visibleCol && visibleCol > 0 ? visibleCol : undefined,
           });
         }
       }

@@ -149,10 +149,19 @@ export function getColumnInfo(metaTables: any, colRef: number): ColumnInfo | nul
 
   for (let i = 0; i < colIds.length; i++) {
     if (colIds[i] === colRef) {
+      let widgetOptions: Record<string, any> | undefined;
+      try {
+        if (colVals.widgetOptions?.[i]) {
+          widgetOptions = JSON.parse(colVals.widgetOptions[i]);
+        }
+      } catch { /* ignore invalid JSON */ }
+      const visibleCol = colVals.visibleCol?.[i] || undefined;
       return {
         colId: colVals.colId[i],
         type: colVals.type[i],
         label: colVals.label?.[i] || colVals.colId[i],
+        widgetOptions,
+        visibleCol: visibleCol && visibleCol > 0 ? visibleCol : undefined,
       };
     }
   }

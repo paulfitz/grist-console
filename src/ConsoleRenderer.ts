@@ -110,7 +110,7 @@ function computeColLayout(state: AppState): ColLayout[] {
     if (values) {
       const sampleSize = Math.min(values.length, 100);
       for (let i = 0; i < sampleSize; i++) {
-        const formatted = formatCellValue(values[i]);
+        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
         width = Math.max(width, formatted.length);
       }
     }
@@ -252,7 +252,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       const colType = state.columns[ci]?.type || "Text";
       const values = state.colValues[col.colId];
       const raw = values ? values[rowIdx] : null;
-      let formatted = truncate(formatCellValue(raw), col.width);
+      let formatted = truncate(formatCellValue(raw, colType, state.columns[ci]?.widgetOptions, state.columns[ci]?.displayValues), col.width);
       const pad = isNumericType(colType) ? padLeft : padRight;
       formatted = pad(formatted, col.width);
 
@@ -440,7 +440,7 @@ function renderPaneInto(
       const colType = pane.columns[ci]?.type || "Text";
       const values = pane.colValues[col.colId];
       const raw = values ? values[rowIdx] : null;
-      let formatted = truncate(formatCellValue(raw), col.width);
+      let formatted = truncate(formatCellValue(raw, colType, pane.columns[ci]?.widgetOptions, pane.columns[ci]?.displayValues), col.width);
       const pad = isNumericType(colType) ? padLeft : padRight;
       formatted = pad(formatted, col.width);
 
@@ -499,7 +499,7 @@ function renderCardPaneInto(
     const col = pane.columns[fieldIdx];
     const values = pane.colValues[col.colId];
     const raw = values ? values[pane.cursorRow] : null;
-    const formatted = truncate(formatCellValue(raw), valueWidth);
+    const formatted = truncate(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues), valueWidth);
 
     const isCurrentField = isFocused && fieldIdx === pane.cursorCol;
     const label = padRight(truncate(col.label, labelWidth), labelWidth);
@@ -548,7 +548,7 @@ function computePaneColLayout(pane: PaneState, paneWidth: number): ColLayout[] {
     if (values) {
       const sampleSize = Math.min(values.length, 100);
       for (let i = 0; i < sampleSize; i++) {
-        const formatted = formatCellValue(values[i]);
+        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
         width = Math.max(width, formatted.length);
       }
     }
