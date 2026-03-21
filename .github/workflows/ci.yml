@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GRIST_IMAGE: gristlabs/grist:1.7.11
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - run: yarn test
+      - name: Cache Grist Docker image
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/grist-image.tar
+          key: docker-${{ env.GRIST_IMAGE }}
+      - name: Load or pull Grist image
+        run: |
+          if [ -f /tmp/grist-image.tar ]; then
+            docker load < /tmp/grist-image.tar
+          else
+            docker pull $GRIST_IMAGE
+            docker save $GRIST_IMAGE > /tmp/grist-image.tar
+          fi
+      - run: yarn test:integration
+        env:
+          GRIST_IMAGE: ${{ env.GRIST_IMAGE }}

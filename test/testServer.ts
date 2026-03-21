@@ -11,6 +11,7 @@ import { execSync } from "child_process";
 import http from "http";
 
 const GRIST_PORT = Number(process.env.GRIST_PORT || 8585);
+const GRIST_IMAGE = process.env.GRIST_IMAGE || "gristlabs/grist";
 const CONTAINER_NAME = "grist-console-test";
 const API_KEY = "api_key_for_console_test";
 
@@ -34,7 +35,7 @@ export function startGrist(): void {
     `-p ${GRIST_PORT}:8484 ` +
     `-e GRIST_TEST_LOGIN=1 ` +
     `-e TEST_SUPPORT_API_KEY=${API_KEY} ` +
-    `gristlabs/grist`,
+    `${GRIST_IMAGE}`,
     { stdio: "inherit" }
   );
 }
