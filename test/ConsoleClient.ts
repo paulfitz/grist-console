@@ -8,7 +8,7 @@ import {
 import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain.js";
-import { parseGristDocUrl } from "../src/index.js";
+import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
 import { assert } from "chai";
