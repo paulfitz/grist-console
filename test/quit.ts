@@ -5,9 +5,12 @@
 import { assert } from "chai";
 import { spawn } from "child_process";
 import path from "path";
+import { fileURLToPath } from "url";
 import {
   SERVER_URL, API_KEY, createTestDoc, applyUserActions, addRows,
-} from "./testServer";
+} from "./testServer.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe("Quit behavior", function() {
   this.timeout(30000);

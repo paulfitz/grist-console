@@ -1,8 +1,55 @@
-import { AppState, isCardPane, PaneState } from "./ConsoleRenderer";
-import { collectLeaves, LayoutNode } from "./ConsoleLayout";
-import { parseCellInput } from "./ConsoleCellFormat";
-import { formatCellValue } from "./ConsoleCellFormat";
-import { ConsoleConnection } from "./ConsoleConnection";
+import { AppState, isCardPane, PaneState, displayWidth } from "./ConsoleRenderer.js";
+import { BulkColValues, ColumnInfo } from "./types.js";
+import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
+import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
+import { ConsoleConnection } from "./ConsoleConnection.js";
+
+/**
+ * Ensure scrollCol is adjusted so cursorCol is visible.
+ * Computes actual column widths to determine visibility.
+ * Works with PaneState or the single-pane fields on AppState.
+ */
+function ensureColVisible(pane: { scrollCol: number; cursorCol: number; columns: ColumnInfo[]; colValues: BulkColValues; rowIds: number[] }, availWidth: number): void {
+  if (pane.cursorCol < pane.scrollCol) {
+    pane.scrollCol = pane.cursorCol;
+    return;
+  }
+  // Compute column widths (same logic as renderer's computePaneColLayout)
+  const colWidths = pane.columns.map(col => {
+    let w = displayWidth(col.label);
+    const values = pane.colValues[col.colId];
+    if (values) {
+      const sampleSize = Math.min(values.length, 100);
+      for (let i = 0; i < sampleSize; i++) {
+        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
+        w = Math.max(w, displayWidth(formatted));
+      }
+    }
+    return Math.max(4, Math.min(30, w));
+  });
+  const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
+  const rowNumWidth = Math.max(3, String(maxRowId).length);
+  const sepLen = 3; // " | "
+
+  // Check if cursorCol is visible from current scrollCol
+  let used = rowNumWidth;
+  for (let c = pane.scrollCol; c <= pane.cursorCol; c++) {
+    used += sepLen + (colWidths[c] || 4);
+  }
+  if (used <= availWidth) { return; } // visible, no scroll needed
+
+  // Scroll right until cursorCol fits
+  while (pane.scrollCol < pane.cursorCol) {
+    pane.scrollCol++;
+    used = rowNumWidth;
+    for (let c = pane.scrollCol; c <= pane.cursorCol; c++) {
+      used += sepLen + (colWidths[c] || 4);
+    }
+    if (used <= availWidth) { return; }
+  }
+  // Last resort: cursor is the first visible column
+  pane.scrollCol = pane.cursorCol;
+}
 
 function getLeafForPane(state: AppState, paneIndex: number): LayoutNode | undefined {
   if (!state.layout) { return undefined; }
@@ -40,7 +87,9 @@ export type InputAction =
   | { type: "switch_to_pages" }
   | { type: "focus_next_pane" }
   | { type: "focus_prev_pane" }
-  | { type: "cycle_theme" };
+  | { type: "cycle_theme" }
+  | { type: "close_overlay" }
+  | { type: "view_cell" };
 
 /**
  * Parse a raw keypress buffer into a key name.
@@ -135,18 +184,13 @@ function handleGridKey(key: string, state: AppState): InputAction {
     case "left":
       if (state.cursorCol > 0) {
         state.cursorCol--;
-        if (state.cursorCol < state.scrollCol) {
-          state.scrollCol = state.cursorCol;
-        }
+        ensureColVisible(state, process.stdout.columns || 80);
       }
       return { type: "render" };
     case "right":
       if (state.cursorCol < state.columns.length - 1) {
         state.cursorCol++;
-        // Scroll horizontally if needed
-        if (state.cursorCol > state.scrollCol + 5) {
-          state.scrollCol = Math.max(0, state.cursorCol - 5);
-        }
+        ensureColVisible(state, process.stdout.columns || 80);
       }
       return { type: "render" };
     case "pageup":
@@ -180,6 +224,8 @@ function handleGridKey(key: string, state: AppState): InputAction {
         state.mode = "confirm_delete";
       }
       return { type: "render" };
+    case "v":
+      return { type: "view_cell" };
     case "r":
       return { type: "refresh" };
     case "t":
@@ -209,7 +255,7 @@ function enterEditMode(state: AppState): void {
 function handleEditKey(key: string, state: AppState): InputAction {
   switch (key) {
     case "escape":
-      state.mode = "grid";
+      state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
       state.statusMessage = "";
       return { type: "render" };
     case "enter":
@@ -263,13 +309,14 @@ function handleEditKey(key: string, state: AppState): InputAction {
  * Handle a keypress in confirm_delete mode.
  */
 function handleConfirmDeleteKey(key: string, state: AppState): InputAction {
+  const returnMode = state.overlayPaneIndex !== null ? "overlay" as const : "grid" as const;
   switch (key) {
     case "y":
-      state.mode = "grid";
+      state.mode = returnMode;
       return { type: "delete_row" };
     case "n":
     case "escape":
-      state.mode = "grid";
+      state.mode = returnMode;
       state.statusMessage = "";
       return { type: "render" };
     default:
@@ -345,17 +392,15 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
     case "left":
       if (pane.cursorCol > 0) {
         pane.cursorCol--;
-        if (pane.cursorCol < pane.scrollCol) {
-          pane.scrollCol = pane.cursorCol;
-        }
+        const leaf = getLeafForPane(state, state.focusedPane);
+        ensureColVisible(pane, leaf?.width || (process.stdout.columns || 80));
       }
       return { type: "render" };
     case "right":
       if (pane.cursorCol < pane.columns.length - 1) {
         pane.cursorCol++;
-        if (pane.cursorCol > pane.scrollCol + 5) {
-          pane.scrollCol = Math.max(0, pane.cursorCol - 5);
-        }
+        const leaf = getLeafForPane(state, state.focusedPane);
+        ensureColVisible(pane, leaf?.width || (process.stdout.columns || 80));
       }
       return { type: "render" };
     case "pageup":
@@ -389,6 +434,8 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
         state.mode = "confirm_delete";
       }
       return { type: "render" };
+    case "v":
+      return { type: "view_cell" };
     case "r":
       return { type: "refresh" };
     case "p":
@@ -401,6 +448,15 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
     case "ctrl-c":
       return { type: "quit" };
     default:
+      // Number keys 1-9: open collapsed widget overlay
+      if (/^[1-9]$/.test(key) && state.collapsedPaneIndices.length > 0) {
+        const idx = parseInt(key, 10) - 1;
+        if (idx < state.collapsedPaneIndices.length) {
+          state.overlayPaneIndex = state.collapsedPaneIndices[idx];
+          state.mode = "overlay";
+          return { type: "render" };
+        }
+      }
       return { type: "none" };
   }
 }
@@ -500,8 +556,8 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
   }
 }
 
-function enterPaneEditMode(state: AppState): void {
-  const pane = state.panes[state.focusedPane];
+function enterPaneEditMode(state: AppState, overridePane?: PaneState): void {
+  const pane = overridePane || state.panes[state.focusedPane];
   if (!pane) { return; }
   const col = pane.columns[pane.cursorCol];
   const values = pane.colValues[col.colId];
@@ -509,6 +565,158 @@ function enterPaneEditMode(state: AppState): void {
   state.editValue = formatCellValue(currentValue, col.type, col.widgetOptions, col.displayValues);
   state.editCursorPos = state.editValue.length;
   state.mode = "editing";
+}
+
+/**
+ * Handle keys in cell viewer mode (scrollable full cell content).
+ */
+function handleCellViewerKey(key: string, state: AppState): InputAction {
+  const termRows = process.stdout.rows || 24;
+  const dataRows = termRows - 3;
+  // Count wrapped lines to know max scroll
+  const wrapWidth = (process.stdout.columns || 80) - 2;
+  let totalLines = 0;
+  for (const rawLine of state.cellViewerContent.split("\n")) {
+    const w = displayWidth(rawLine);
+    totalLines += w <= wrapWidth ? 1 : Math.ceil(w / wrapWidth);
+  }
+  const maxScroll = Math.max(0, totalLines - dataRows);
+
+  switch (key) {
+    case "escape":
+    case "v":
+    case "q":
+      // Return to previous mode
+      state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
+      state.cellViewerContent = "";
+      state.cellViewerScroll = 0;
+      return { type: "render" };
+    case "up":
+      if (state.cellViewerScroll > 0) { state.cellViewerScroll--; }
+      return { type: "render" };
+    case "down":
+      if (state.cellViewerScroll < maxScroll) { state.cellViewerScroll++; }
+      return { type: "render" };
+    case "pageup":
+      state.cellViewerScroll = Math.max(0, state.cellViewerScroll - dataRows);
+      return { type: "render" };
+    case "pagedown":
+      state.cellViewerScroll = Math.min(maxScroll, state.cellViewerScroll + dataRows);
+      return { type: "render" };
+    case "home":
+      state.cellViewerScroll = 0;
+      return { type: "render" };
+    case "end":
+      state.cellViewerScroll = maxScroll;
+      return { type: "render" };
+    default:
+      return { type: "none" };
+  }
+}
+
+/**
+ * Handle keys in overlay mode (full-screen view of a collapsed widget).
+ */
+function handleOverlayKey(key: string, state: AppState): InputAction {
+  if (state.overlayPaneIndex === null) {
+    state.mode = "grid";
+    return { type: "render" };
+  }
+  const pane = state.panes[state.overlayPaneIndex];
+  if (!pane) {
+    state.mode = "grid";
+    state.overlayPaneIndex = null;
+    return { type: "render" };
+  }
+
+  if (isCardPane(pane)) {
+    switch (key) {
+      case "escape":
+        return { type: "close_overlay" };
+      default: {
+        const savedFocused = state.focusedPane;
+        state.focusedPane = state.overlayPaneIndex;
+        const result = handleCardPaneKey(key, state, pane);
+        state.focusedPane = savedFocused;
+        return result;
+      }
+    }
+  }
+
+  const termRows = process.stdout.rows || 24;
+  const pageSize = Math.max(1, termRows - 5);
+
+  switch (key) {
+    case "escape":
+      return { type: "close_overlay" };
+    case "up":
+      if (pane.cursorRow > 0) {
+        pane.cursorRow--;
+        if (pane.cursorRow < pane.scrollRow) {
+          pane.scrollRow = pane.cursorRow;
+        }
+      }
+      return { type: "render" };
+    case "down":
+      if (pane.cursorRow < pane.rowIds.length - 1) {
+        pane.cursorRow++;
+        const dataRows = Math.max(1, termRows - 5);
+        if (pane.cursorRow >= pane.scrollRow + dataRows) {
+          pane.scrollRow = pane.cursorRow - dataRows + 1;
+        }
+      }
+      return { type: "render" };
+    case "left":
+      if (pane.cursorCol > 0) {
+        pane.cursorCol--;
+        ensureColVisible(pane, process.stdout.columns || 80);
+      }
+      return { type: "render" };
+    case "right":
+      if (pane.cursorCol < pane.columns.length - 1) {
+        pane.cursorCol++;
+        ensureColVisible(pane, process.stdout.columns || 80);
+      }
+      return { type: "render" };
+    case "pageup":
+      pane.cursorRow = Math.max(0, pane.cursorRow - pageSize);
+      pane.scrollRow = Math.max(0, pane.scrollRow - pageSize);
+      return { type: "render" };
+    case "pagedown":
+      pane.cursorRow = Math.min(pane.rowIds.length - 1, pane.cursorRow + pageSize);
+      pane.scrollRow = Math.min(
+        Math.max(0, pane.rowIds.length - pageSize),
+        pane.scrollRow + pageSize
+      );
+      return { type: "render" };
+    case "home":
+      pane.cursorRow = 0;
+      pane.scrollRow = 0;
+      return { type: "render" };
+    case "end":
+      pane.cursorRow = Math.max(0, pane.rowIds.length - 1);
+      pane.scrollRow = Math.max(0, pane.rowIds.length - pageSize);
+      return { type: "render" };
+    case "enter":
+      if (pane.rowIds.length > 0 && pane.columns.length > 0) {
+        enterPaneEditMode(state, pane);
+      }
+      return { type: "render" };
+    case "a":
+      return { type: "add_row" };
+    case "d":
+      if (pane.rowIds.length > 0) {
+        state.mode = "confirm_delete";
+      }
+      return { type: "render" };
+    case "v":
+      return { type: "view_cell" };
+    case "q":
+    case "ctrl-c":
+      return { type: "quit" };
+    default:
+      return { type: "none" };
+  }
 }
 
 /**
@@ -530,6 +738,10 @@ export function handleKeypress(buf: Buffer, state: AppState): InputAction {
       return handleEditKey(key, state);
     case "confirm_delete":
       return handleConfirmDeleteKey(key, state);
+    case "overlay":
+      return handleOverlayKey(key, state);
+    case "cell_viewer":
+      return handleCellViewerKey(key, state);
     default:
       return { type: "none" };
   }
@@ -544,7 +756,8 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
   let rowId: number;
 
   if (state.panes.length > 0) {
-    const pane = state.panes[state.focusedPane];
+    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+    const pane = state.panes[paneIdx];
     tableId = pane.sectionInfo.tableId;
     col = pane.columns[pane.cursorCol];
     rowId = pane.rowIds[pane.cursorRow];
@@ -563,7 +776,8 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
   } catch (e: any) {
     state.statusMessage = `Error: ${e.message}`;
   }
-  state.mode = "grid";
+  // Return to overlay if we were editing from there, otherwise grid
+  state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
 }
 
 /**
@@ -572,7 +786,8 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
 export async function executeAddRow(state: AppState, conn: ConsoleConnection): Promise<void> {
   let tableId: string;
   if (state.panes.length > 0) {
-    tableId = state.panes[state.focusedPane].sectionInfo.tableId;
+    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+    tableId = state.panes[paneIdx].sectionInfo.tableId;
   } else {
     tableId = state.currentTableId;
   }
@@ -596,7 +811,8 @@ export async function executeDeleteRow(state: AppState, conn: ConsoleConnection)
   let rowIds: number[];
 
   if (state.panes.length > 0) {
-    const pane = state.panes[state.focusedPane];
+    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+    const pane = state.panes[paneIdx];
     tableId = pane.sectionInfo.tableId;
     rowId = pane.rowIds[pane.cursorRow];
     cursorRow = pane.cursorRow;
@@ -615,7 +831,8 @@ export async function executeDeleteRow(state: AppState, conn: ConsoleConnection)
     state.statusMessage = `Row ${rowId} deleted`;
     if (cursorRow >= rowIds.length - 1 && cursorRow > 0) {
       if (state.panes.length > 0) {
-        state.panes[state.focusedPane].cursorRow--;
+        const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+        state.panes[paneIdx].cursorRow--;
       } else {
         state.cursorRow--;
       }

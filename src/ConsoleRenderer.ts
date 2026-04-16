@@ -1,7 +1,9 @@
-import { BulkColValues, ColumnInfo } from "./types";
-import { formatCellValue } from "./ConsoleCellFormat";
-import { BoxSpec, LayoutNode, PageInfo, SectionInfo, collectLeaves } from "./ConsoleLayout";
-import { Theme, defaultTheme } from "./ConsoleTheme";
+import { BulkColValues, CellValue, ColumnInfo } from "./types.js";
+import { formatCellValue } from "./ConsoleCellFormat.js";
+import { BoxSpec, LayoutNode, PageInfo, SectionInfo, collectLeaves } from "./ConsoleLayout.js";
+import { Theme, defaultTheme } from "./ConsoleTheme.js";
+import stringWidth from "string-width";
+import { getTermWidthOverride, hasOverrides } from "./termWidth.js";
 
 // ANSI escape codes (non-stylistic, always needed)
 const ESC = "\x1b[";
@@ -19,7 +21,7 @@ function screenPreamble(t: Theme): string {
   return HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN + MOVE_TO(0, 0);
 }
 
-export type AppMode = "table_picker" | "page_picker" | "grid" | "editing" | "confirm_delete";
+export type AppMode = "table_picker" | "page_picker" | "grid" | "editing" | "confirm_delete" | "overlay" | "cell_viewer";
 
 export interface PaneState {
   sectionInfo: SectionInfo;
@@ -58,6 +60,12 @@ export interface AppState {
   layout: LayoutNode | null;
   boxSpec: BoxSpec | null;
   focusedPane: number;
+  // Collapsed widget tray
+  collapsedPaneIndices: number[];
+  overlayPaneIndex: number | null;
+  // Cell viewer
+  cellViewerContent: string;
+  cellViewerScroll: number;
   // Theme
   theme: Theme;
 }
@@ -87,6 +95,10 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     layout: null,
     boxSpec: null,
     focusedPane: 0,
+    collapsedPaneIndices: [],
+    overlayPaneIndex: null,
+    cellViewerContent: "",
+    cellViewerScroll: 0,
     // Theme
     theme: theme || defaultTheme,
   };
@@ -105,13 +117,13 @@ function computeColLayout(state: AppState): ColLayout[] {
   const maxWidth = 30;
   const minWidth = 4;
   return state.columns.map((col) => {
-    let width = col.label.length;
+    let width = displayWidth(col.label);
     const values = state.colValues[col.colId];
     if (values) {
       const sampleSize = Math.min(values.length, 100);
       for (let i = 0; i < sampleSize; i++) {
-        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
-        width = Math.max(width, formatted.length);
+        const formatted = flattenToLine(formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues));
+        width = Math.max(width, displayWidth(formatted));
       }
     }
     width = Math.max(minWidth, Math.min(maxWidth, width));
@@ -119,19 +131,177 @@ function computeColLayout(state: AppState): ColLayout[] {
   });
 }
 
+/**
+ * Return the display width of a string in terminal cells.
+ * Uses string-width, with terminal-measured overrides for known-problematic characters.
+ */
+export function displayWidth(s: string): number {
+  // Strip ANSI escape codes before measuring
+  const clean = s.replace(/\x1b\[[0-9;]*m/g, "");
+  if (!hasOverrides()) { return stringWidth(clean); }
+
+  // Apply per-character overrides where the terminal disagrees with string-width
+  let w = 0;
+  let remaining = clean;
+  while (remaining.length > 0) {
+    let matched = false;
+    // Check multi-codepoint sequences first (e.g. ❤️ = ❤ + VS16)
+    for (let len = Math.min(remaining.length, 4); len >= 1; len--) {
+      const candidate = [...remaining].slice(0, len).join("");
+      const override = getTermWidthOverride(candidate);
+      if (override !== undefined) {
+        w += override;
+        remaining = remaining.slice(candidate.length);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      // No override -- use string-width for this character
+      const ch = [...remaining][0];
+      w += stringWidth(ch);
+      remaining = remaining.slice(ch.length);
+    }
+  }
+  return w;
+}
+
+/**
+ * Replace newlines and other control characters with spaces for single-line display.
+ */
+function flattenToLine(s: string): string {
+  return s.replace(/[\n\r\t]/g, " ");
+}
+
+/**
+ * Truncate a string to fit within maxLen display cells.
+ */
 function truncate(s: string, maxLen: number): string {
-  if (s.length <= maxLen) { return s; }
-  return s.slice(0, maxLen - 1) + "\u2026";
+  if (displayWidth(s) <= maxLen) { return s; }
+  // Binary-ish search: try progressively shorter slices
+  const chars = [...s]; // split into codepoints
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (displayWidth(chars.slice(0, mid).join("")) + 1 <= maxLen) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return chars.slice(0, lo).join("") + "\u2026";
 }
 
 function padRight(s: string, width: number): string {
-  if (s.length >= width) { return s.slice(0, width); }
-  return s + " ".repeat(width - s.length);
+  const w = displayWidth(s);
+  if (w >= width) { return s; }
+  return s + " ".repeat(width - w);
 }
 
 function padLeft(s: string, width: number): string {
-  if (s.length >= width) { return s.slice(0, width); }
-  return " ".repeat(width - s.length) + s;
+  const w = displayWidth(s);
+  if (w >= width) { return s; }
+  return " ".repeat(width - w) + s;
+}
+
+/**
+ * Convert a hex color like "#2486FB" to an ANSI 24-bit color escape.
+ */
+function hexToAnsi(hex: string, bg: boolean): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) { return ""; }
+  return bg ? `\x1b[48;2;${r};${g};${b}m` : `\x1b[38;2;${r};${g};${b}m`;
+}
+
+const ANSI_RESET = "\x1b[0m";
+
+/**
+ * Apply choice color styling to a cell value string if the column has choiceOptions.
+ */
+function applyChoiceColor(formatted: string, value: CellValue, colType: string, widgetOpts?: Record<string, any>): string {
+  if (!widgetOpts?.choiceOptions) { return formatted; }
+  const baseType = colType.split(":")[0];
+  const opts = widgetOpts.choiceOptions as Record<string, { fillColor?: string; textColor?: string }>;
+
+  if (baseType === "Choice") {
+    const key = typeof value === "string" ? value : String(value);
+    const colors = opts[key];
+    if (!colors) { return formatted; }
+    let ansi = "";
+    if (colors.fillColor) { ansi += hexToAnsi(colors.fillColor, true); }
+    if (colors.textColor) { ansi += hexToAnsi(colors.textColor, false); }
+    if (!ansi) { return formatted; }
+    return ansi + formatted + ANSI_RESET;
+  }
+
+  if (baseType === "ChoiceList" && Array.isArray(value) && value[0] === "L") {
+    // Color each choice in the comma-separated list
+    const items = value.slice(1) as string[];
+    const colored = items.map(item => {
+      const colors = opts[item];
+      if (!colors) { return String(item); }
+      let ansi = "";
+      if (colors.fillColor) { ansi += hexToAnsi(colors.fillColor, true); }
+      if (colors.textColor) { ansi += hexToAnsi(colors.textColor, false); }
+      if (!ansi) { return String(item); }
+      return ansi + String(item) + ANSI_RESET;
+    });
+    return colored.join(", ");
+  }
+
+  return formatted;
+}
+
+/**
+ * Get the status line content: show full cell value if the current cell is truncated,
+ * otherwise show the statusMessage.
+ */
+function getStatusLine(state: AppState, termCols: number): string {
+  if (state.statusMessage) { return state.statusMessage; }
+  if (state.mode === "editing") { return ""; }
+
+  // Get the current pane and cursor
+  let columns: ColumnInfo[];
+  let colValues: BulkColValues;
+  let cursorRow: number;
+  let cursorCol: number;
+
+  if (state.mode === "overlay" && state.overlayPaneIndex !== null) {
+    const pane = state.panes[state.overlayPaneIndex];
+    if (!pane) { return ""; }
+    columns = pane.columns;
+    colValues = pane.colValues;
+    cursorRow = pane.cursorRow;
+    cursorCol = pane.cursorCol;
+  } else if (state.panes.length > 0) {
+    const pane = state.panes[state.focusedPane];
+    if (!pane) { return ""; }
+    columns = pane.columns;
+    colValues = pane.colValues;
+    cursorRow = pane.cursorRow;
+    cursorCol = pane.cursorCol;
+  } else {
+    columns = state.columns;
+    colValues = state.colValues;
+    cursorRow = state.cursorRow;
+    cursorCol = state.cursorCol;
+  }
+
+  if (cursorCol >= columns.length) { return ""; }
+  const col = columns[cursorCol];
+  const values = colValues[col.colId];
+  const raw = values ? values[cursorRow] : null;
+  if (raw === null || raw === undefined) { return ""; }
+  const full = flattenToLine(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues));
+  // Only show if it would be truncated (longer than typical column width)
+  if (displayWidth(full) > 30) {
+    return truncate(full, termCols);
+  }
+  return "";
 }
 
 function isNumericType(colType: string): boolean {
@@ -146,6 +316,9 @@ export function render(state: AppState): string {
   const termRows = process.stdout.rows || 24;
   const termCols = process.stdout.columns || 80;
 
+  if (state.mode === "cell_viewer") {
+    return renderCellViewer(state, termRows, termCols);
+  }
   if (state.mode === "table_picker") {
     return renderTablePicker(state, termRows, termCols);
   }
@@ -156,6 +329,60 @@ export function render(state: AppState): string {
     return renderMultiPane(state, termRows, termCols);
   }
   return renderGrid(state, termRows, termCols);
+}
+
+function renderCellViewer(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
+  const content = state.cellViewerContent;
+
+  // Word-wrap content to terminal width (with 2-char margin)
+  const wrapWidth = termCols - 2;
+  const wrappedLines: string[] = [];
+  for (const rawLine of content.split("\n")) {
+    if (displayWidth(rawLine) <= wrapWidth) {
+      wrappedLines.push(rawLine);
+    } else {
+      // Wrap long lines
+      const chars = [...rawLine];
+      let start = 0;
+      while (start < chars.length) {
+        // Find how many chars fit in wrapWidth
+        let end = start + 1;
+        while (end <= chars.length && displayWidth(chars.slice(start, end).join("")) <= wrapWidth) {
+          end++;
+        }
+        end--; // back to last that fit
+        if (end <= start) { end = start + 1; } // at least one char
+        wrappedLines.push(chars.slice(start, end).join(""));
+        start = end;
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(t.titleBar(padRight(" Cell Content ", termCols)));
+
+  const dataRows = termRows - 3; // title + footer + status
+  for (let r = 0; r < dataRows; r++) {
+    const lineIdx = state.cellViewerScroll + r;
+    if (lineIdx < wrappedLines.length) {
+      lines.push(" " + padRight(wrappedLines[lineIdx], termCols - 1));
+    } else {
+      lines.push("");
+    }
+  }
+
+  while (lines.length < termRows - 2) {
+    lines.push("");
+  }
+
+  const scrollInfo = wrappedLines.length > dataRows
+    ? `  (${state.cellViewerScroll + 1}-${Math.min(state.cellViewerScroll + dataRows, wrappedLines.length)}/${wrappedLines.length})`
+    : "";
+  lines.push(t.helpBar(`\u2191\u2193:scroll  Esc/v:close${scrollInfo}`));
+  lines.push("");
+
+  return screenPreamble(t) + lines.join("\n");
 }
 
 function renderTablePicker(state: AppState, termRows: number, termCols: number): string {
@@ -189,7 +416,7 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   lines.push(t.helpBar("\u2191\u2193:select  Enter:open  T:theme  q:quit"));
 
   // Status
-  lines.push(state.statusMessage || "");
+  lines.push(getStatusLine(state, termCols));
 
   return screenPreamble(t) + lines.join("\n");
 }
@@ -252,19 +479,18 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       const colType = state.columns[ci]?.type || "Text";
       const values = state.colValues[col.colId];
       const raw = values ? values[rowIdx] : null;
-      let formatted = truncate(formatCellValue(raw, colType, state.columns[ci]?.widgetOptions, state.columns[ci]?.displayValues), col.width);
-      const pad = isNumericType(colType) ? padLeft : padRight;
-      formatted = pad(formatted, col.width);
-
+      const plainText = truncate(flattenToLine(formatCellValue(raw, colType, state.columns[ci]?.widgetOptions, state.columns[ci]?.displayValues)), col.width);
+      const padFn = isNumericType(colType) ? padLeft : padRight;
       const isCurrentCell = (rowIdx === state.cursorRow && ci === state.cursorCol);
 
       if (state.mode === "editing" && isCurrentCell) {
         const editDisplay = padRight(truncate(state.editValue, col.width), col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
-        line += t.colSeparator + t.cursor(formatted);
+        line += t.colSeparator + t.cursor(padFn(plainText, col.width));
       } else {
-        line += t.colSeparator + formatted;
+        const colored = applyChoiceColor(plainText, raw, colType, state.columns[ci]?.widgetOptions);
+        line += t.colSeparator + padFn(colored, col.width);
       }
     }
     lines.push(line);
@@ -281,11 +507,11 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   } else if (state.mode === "confirm_delete") {
     lines.push(t.helpBar(`Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
-    lines.push(t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  a:add  d:del  t:tables  T:theme  q:quit"));
+    lines.push(t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  t:tables  T:theme  q:quit"));
   }
 
   // Status
-  lines.push(state.statusMessage || "");
+  lines.push(getStatusLine(state, termCols));
 
   return screenPreamble(t) + lines.join("\n");
 }
@@ -314,23 +540,35 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
   }
 
   lines.push(t.helpBar("\u2191\u2193:select  Enter:open  t:tables  T:theme  q:quit"));
-  lines.push(state.statusMessage || "");
+  lines.push(getStatusLine(state, termCols));
 
   return screenPreamble(t) + lines.join("\n");
 }
 
 function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
-  // Build a character buffer for the whole screen
+  const hasCollapsed = state.collapsedPaneIndices.length > 0;
+  const trayHeight = hasCollapsed ? 1 : 0;
+
+  // Overlay mode: render a single collapsed pane full-screen
+  if (state.mode === "overlay" && state.overlayPaneIndex !== null) {
+    const pane = state.panes[state.overlayPaneIndex];
+    if (pane) {
+      return renderOverlay(state, pane, termRows, termCols, trayHeight);
+    }
+  }
+
+  // Build a character buffer for the whole screen (below tray, above footer)
+  const bufHeight = termRows - 2 - trayHeight;
   const buf: string[][] = [];
-  for (let r = 0; r < termRows - 2; r++) {
+  for (let r = 0; r < bufHeight; r++) {
     buf.push(new Array(termCols).fill(" "));
   }
 
   const leaves = collectLeaves(state.layout!);
 
   // Draw borders between split children
-  drawBorders(state.layout!, buf, termCols, termRows - 2, t);
+  drawBorders(state.layout!, buf, termCols, bufHeight, t);
 
   // Draw each pane
   for (const leaf of leaves) {
@@ -343,8 +581,14 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
 
   // Flatten buffer to string with ANSI positioning
   let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
+
+  // Collapsed widget tray at top
+  if (hasCollapsed) {
+    output += MOVE_TO(0, 0) + renderCollapsedTray(state, termCols);
+  }
+
   for (let r = 0; r < buf.length; r++) {
-    output += MOVE_TO(r, 0) + buf[r].join("");
+    output += MOVE_TO(r + trayHeight, 0) + buf[r].join("");
   }
 
   // Footer: help and status
@@ -358,10 +602,63 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
     output += MOVE_TO(footerRow, 0) +
       t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`);
   } else {
+    const collapsedHint = hasCollapsed ? "  1-9:widget" : "";
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar("\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  T:theme  q:quit");
+      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  p:pages${collapsedHint}  T:theme  q:quit`);
   }
-  output += MOVE_TO(termRows - 1, 0) + (state.statusMessage || "");
+  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
+
+  return output;
+}
+
+function renderCollapsedTray(state: AppState, termCols: number): string {
+  const t = state.theme;
+  let tray = "";
+  for (let i = 0; i < state.collapsedPaneIndices.length; i++) {
+    const paneIdx = state.collapsedPaneIndices[i];
+    const pane = state.panes[paneIdx];
+    if (!pane) { continue; }
+    const name = pane.sectionInfo.title || pane.sectionInfo.tableId;
+    const label = ` ${i + 1}:${name} `;
+    tray += t.titleBar(label) + " ";
+  }
+  return padRight(tray, termCols);
+}
+
+function renderOverlay(
+  state: AppState, pane: PaneState,
+  termRows: number, termCols: number, trayHeight: number,
+): string {
+  const t = state.theme;
+  const bufHeight = termRows - 2 - trayHeight;
+  const buf: string[][] = [];
+  for (let r = 0; r < bufHeight; r++) {
+    buf.push(new Array(termCols).fill(" "));
+  }
+
+  const overlayLeaf: LayoutNode = {
+    top: 0, left: 0, width: termCols, height: bufHeight,
+    paneIndex: state.overlayPaneIndex!,
+  };
+  renderPaneInto(buf, overlayLeaf, pane, true, state.mode, state.editValue, t);
+
+  let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
+  if (trayHeight > 0) {
+    output += MOVE_TO(0, 0) + renderCollapsedTray(state, termCols);
+  }
+  for (let r = 0; r < buf.length; r++) {
+    output += MOVE_TO(r + trayHeight, 0) + buf[r].join("");
+  }
+
+  const footerRow = termRows - 2;
+  if (state.mode === "editing") {
+    output += MOVE_TO(footerRow, 0) +
+      t.helpBar("Type to edit  Enter:save  Esc:cancel");
+  } else {
+    output += MOVE_TO(footerRow, 0) +
+      t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  Esc:close  a:add  d:del");
+  }
+  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
 
   return output;
 }
@@ -440,19 +737,19 @@ function renderPaneInto(
       const colType = pane.columns[ci]?.type || "Text";
       const values = pane.colValues[col.colId];
       const raw = values ? values[rowIdx] : null;
-      let formatted = truncate(formatCellValue(raw, colType, pane.columns[ci]?.widgetOptions, pane.columns[ci]?.displayValues), col.width);
-      const pad = isNumericType(colType) ? padLeft : padRight;
-      formatted = pad(formatted, col.width);
-
+      const plainText = truncate(flattenToLine(formatCellValue(raw, colType, pane.columns[ci]?.widgetOptions, pane.columns[ci]?.displayValues)), col.width);
+      const padFn = isNumericType(colType) ? padLeft : padRight;
       const isCurrentCell = isFocused && rowIdx === pane.cursorRow && ci === pane.cursorCol;
 
       if (mode === "editing" && isCurrentCell) {
         const editDisplay = padRight(truncate(editValue, col.width), col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
-        line += t.colSeparator + t.cursor(formatted);
+        line += t.colSeparator + t.cursor(padFn(plainText, col.width));
       } else {
-        line += t.colSeparator + formatted;
+        // Apply choice colors for Choice/ChoiceList columns
+        const colored = applyChoiceColor(plainText, raw, colType, pane.columns[ci]?.widgetOptions);
+        line += t.colSeparator + padFn(colored, col.width);
       }
     }
     writeToBuffer(buf, dataStartRow + r, left, line, width);
@@ -485,7 +782,7 @@ function renderCardPaneInto(
 
   // Compute label width (max label length)
   const labelWidth = Math.min(
-    Math.max(6, ...pane.columns.map(c => c.label.length)),
+    Math.max(6, ...pane.columns.map(c => displayWidth(c.label))),
     Math.floor(width / 3),
   );
   const cardSep = t.colSeparator;
@@ -499,7 +796,7 @@ function renderCardPaneInto(
     const col = pane.columns[fieldIdx];
     const values = pane.colValues[col.colId];
     const raw = values ? values[pane.cursorRow] : null;
-    const formatted = truncate(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues), valueWidth);
+    const formatted = truncate(flattenToLine(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues)), valueWidth);
 
     const isCurrentField = isFocused && fieldIdx === pane.cursorCol;
     const label = padRight(truncate(col.label, labelWidth), labelWidth);
@@ -511,7 +808,8 @@ function renderCardPaneInto(
     } else if (isCurrentField) {
       line = t.fieldLabelActive(label) + cardSep + t.cursor(padRight(formatted, valueWidth));
     } else {
-      line = t.fieldLabel(label) + cardSep + padRight(formatted, valueWidth);
+      const colored = applyChoiceColor(formatted, raw, col.type, col.widgetOptions);
+      line = t.fieldLabel(label) + cardSep + padRight(colored, valueWidth);
     }
     writeToBuffer(buf, top + 1 + f, left, line, width);
   }
@@ -543,13 +841,13 @@ function computePaneColLayout(pane: PaneState, paneWidth: number): ColLayout[] {
   const maxWidth = 30;
   const minWidth = 4;
   return pane.columns.map((col) => {
-    let width = col.label.length;
+    let width = displayWidth(col.label);
     const values = pane.colValues[col.colId];
     if (values) {
       const sampleSize = Math.min(values.length, 100);
       for (let i = 0; i < sampleSize; i++) {
-        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
-        width = Math.max(width, formatted.length);
+        const formatted = flattenToLine(formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues));
+        width = Math.max(width, displayWidth(formatted));
       }
     }
     width = Math.max(minWidth, Math.min(maxWidth, width));
@@ -565,7 +863,7 @@ function writeToBuffer(buf: string[][], row: number, col: number, text: string, 
   if (row < 0 || row >= buf.length) { return; }
   // Replace the entire row segment with the text (ANSI codes make char counting unreliable,
   // so we use a single-cell approach: clear the range, then write the string into cell 0).
-  buf[row][col] = text + " ".repeat(Math.max(0, maxWidth - stripAnsi(text).length));
+  buf[row][col] = text + " ".repeat(Math.max(0, maxWidth - displayWidth(stripAnsi(text))));
   // Clear remaining cells in this pane's range so they don't duplicate content
   for (let c = col + 1; c < Math.min(col + maxWidth, buf[row].length); c++) {
     buf[row][c] = "";

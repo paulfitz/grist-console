@@ -1,4 +1,4 @@
-import { CellValue, ColumnInfo, GristObjCode } from "./types";
+import { CellValue, ColumnInfo, GristObjCode } from "./types.js";
 
 /**
  * Simple moment-style date format using native JS Date.

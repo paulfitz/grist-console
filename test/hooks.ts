@@ -4,7 +4,7 @@
  * Set GRIST_RUNNING=1 to skip container management (server already running).
  */
 
-import { startGrist, stopGrist, waitForGrist } from "./testServer";
+import { startGrist, stopGrist, waitForGrist } from "./testServer.js";
 
 const externalGrist = process.env.GRIST_RUNNING === "1";
 

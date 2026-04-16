@@ -1,4 +1,4 @@
-import { ColumnInfo } from "./types";
+import { ColumnInfo } from "./types.js";
 
 /**
  * Metadata types extracted from _metaTables.
@@ -313,6 +313,20 @@ function isCollapsedOrEmpty(box: BoxSpec, sectionIdToPaneIndex: Map<number, numb
   }
   if (!box.children || box.children.length === 0) { return true; }
   return box.children.every(c => isCollapsedOrEmpty(c, sectionIdToPaneIndex));
+}
+
+/**
+ * Extract section IDs from the collapsed array of a BoxSpec.
+ */
+export function extractCollapsedSectionIds(box: BoxSpec): number[] {
+  if (!box.collapsed) { return []; }
+  const ids: number[] = [];
+  for (const child of box.collapsed) {
+    if (child.leaf !== undefined) {
+      ids.push(child.leaf);
+    }
+  }
+  return ids;
 }
 
 /**

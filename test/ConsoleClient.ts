@@ -1,15 +1,15 @@
-import { formatCellValue, parseCellInput } from "../src/ConsoleCellFormat";
+import { formatCellValue, parseCellInput } from "../src/ConsoleCellFormat.js";
 import {
   extractPages, extractSectionsForView, extractFieldsForSection,
-  extractFiltersForSection,
+  extractFiltersForSection, extractCollapsedSectionIds,
   getColumnInfo, getColIdByRef, parseLayoutSpec, computeLayout,
   getLayoutSpecForView, Rect,
-} from "../src/ConsoleLayout";
-import { createInitialState, render, PaneState } from "../src/ConsoleRenderer";
-import { handleKeypress } from "../src/ConsoleInput";
-import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain";
-import { parseGristDocUrl } from "../src/index";
-import { GristObjCode } from "../src/types";
+} from "../src/ConsoleLayout.js";
+import { createInitialState, render, PaneState, displayWidth } from "../src/ConsoleRenderer.js";
+import { handleKeypress } from "../src/ConsoleInput.js";
+import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain.js";
+import { parseGristDocUrl } from "../src/index.js";
+import { GristObjCode } from "../src/types.js";
 
 import { assert } from "chai";
 
@@ -1119,6 +1119,133 @@ describe("ConsoleClient", function() {
 
     it("returns empty map when _grist_Filters is missing", function() {
       assert.equal(extractFiltersForSection({}, 10).size, 0);
+    });
+  });
+
+  describe("displayWidth", function() {
+    it("counts ASCII characters as width 1", function() {
+      assert.equal(displayWidth("hello"), 5);
+      assert.equal(displayWidth(""), 0);
+      assert.equal(displayWidth("abc 123"), 7);
+    });
+
+    it("counts emoji as width 2", function() {
+      assert.equal(displayWidth("\u{1F680}"), 2); // rocket
+      assert.equal(displayWidth("\u2705"), 2);     // checkmark
+      assert.equal(displayWidth("\u2764\uFE0F"), 2); // heart with variation selector
+    });
+
+    it("treats variation selectors correctly", function() {
+      // U+2764 alone is text-style (1 cell), with VS16 it's emoji-style (2 cells)
+      assert.equal(displayWidth("\u2764"), 1);
+      assert.equal(displayWidth("\u2764\uFE0F"), 2);
+    });
+
+    it("handles mixed ASCII and emoji", function() {
+      assert.equal(displayWidth("\u{1F680} WIP"), 6); // 2 + 1 + 3
+      assert.equal(displayWidth("\u2705 Done"), 7);    // 2 + 1 + 4
+      assert.equal(displayWidth("\u2764\uFE0F tag"), 6); // 2 + 1 + 3
+    });
+  });
+
+  describe("extractCollapsedSectionIds", function() {
+    it("extracts collapsed leaf IDs", function() {
+      const box = {
+        children: [{ leaf: 7 }],
+        collapsed: [{ leaf: 4 }, { leaf: 5 }],
+      };
+      assert.deepEqual(extractCollapsedSectionIds(box), [4, 5]);
+    });
+
+    it("returns empty for no collapsed", function() {
+      const box = { children: [{ leaf: 7 }] };
+      assert.deepEqual(extractCollapsedSectionIds(box), []);
+    });
+
+    it("returns empty for empty collapsed array", function() {
+      const box = { children: [{ leaf: 7 }], collapsed: [] };
+      assert.deepEqual(extractCollapsedSectionIds(box), []);
+    });
+  });
+
+  describe("collapsed widget overlay", function() {
+    function makeCollapsedState(): ReturnType<typeof createInitialState> {
+      const state = createInitialState("testDoc");
+      state.mode = "grid";
+      const visiblePane: PaneState = {
+        sectionInfo: {
+          sectionId: 7, tableRef: 2, tableId: "ToDo", parentKey: "record",
+          title: "ToDo",
+          linkSrcSectionRef: 4, linkSrcColRef: 0, linkTargetColRef: 17, sortColRefs: "",
+        },
+        columns: [{ colId: "Task", type: "Text", label: "Task" }],
+        rowIds: [1, 2],
+        allRowIds: [1, 2],
+        colValues: { Task: ["Task A", "Task B"] },
+        allColValues: { Task: ["Task A", "Task B"] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+      const collapsedPane: PaneState = {
+        sectionInfo: {
+          sectionId: 4, tableRef: 1, tableId: "Dates", parentKey: "record",
+          title: "Dates",
+          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
+        },
+        columns: [{ colId: "Label", type: "Text", label: "Label" }],
+        rowIds: [1, 2, 3],
+        allRowIds: [1, 2, 3],
+        colValues: { Label: ["Mon", "Tue", "Wed"] },
+        allColValues: { Label: ["Mon", "Tue", "Wed"] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+      state.panes = [visiblePane, collapsedPane];
+      state.collapsedPaneIndices = [1]; // pane index 1 is collapsed
+      state.focusedPane = 0;
+      state.layout = {
+        top: 0, left: 0, width: 80, height: 22,
+        paneIndex: 0,
+      };
+      return state;
+    }
+
+    it("pressing 1 opens overlay for first collapsed widget", function() {
+      const state = makeCollapsedState();
+      const action = handleKeypress(Buffer.from("1"), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.mode, "overlay");
+      assert.equal(state.overlayPaneIndex, 1);
+    });
+
+    it("pressing Escape in overlay returns to grid", function() {
+      const state = makeCollapsedState();
+      handleKeypress(Buffer.from("1"), state);
+      assert.equal(state.mode, "overlay");
+      const action = handleKeypress(Buffer.from("\x1b"), state);
+      assert.equal(action.type, "close_overlay");
+    });
+
+    it("arrow keys navigate in overlay pane", function() {
+      const state = makeCollapsedState();
+      handleKeypress(Buffer.from("1"), state); // open overlay
+      assert.equal(state.panes[1].cursorRow, 0);
+      handleKeypress(Buffer.from("\x1b[B"), state); // down
+      assert.equal(state.panes[1].cursorRow, 1);
+      handleKeypress(Buffer.from("\x1b[B"), state); // down
+      assert.equal(state.panes[1].cursorRow, 2);
+    });
+
+    it("number key beyond collapsed count does nothing", function() {
+      const state = makeCollapsedState();
+      const action = handleKeypress(Buffer.from("5"), state);
+      assert.equal(action.type, "none");
+      assert.equal(state.mode, "grid");
+    });
+
+    it("focusedPane stays on visible pane during overlay", function() {
+      const state = makeCollapsedState();
+      handleKeypress(Buffer.from("1"), state);
+      assert.equal(state.focusedPane, 0, "focusedPane should remain on visible pane");
+      assert.equal(state.overlayPaneIndex, 1);
     });
   });
 

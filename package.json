@@ -2,6 +2,7 @@
   "name": "grist-console",
   "version": "0.2.0",
   "description": "Terminal UI for viewing and editing Grist documents",
+  "type": "module",
   "main": "dist/src/index.js",
   "bin": {
     "grist-console": "dist/src/index.js"
@@ -39,6 +40,7 @@
   "dependencies": {
     "commander": "^12.0.0",
     "node-fetch": "^2.7.0",
+    "string-width": "^8.2.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

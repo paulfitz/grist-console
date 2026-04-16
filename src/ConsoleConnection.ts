@@ -1,5 +1,5 @@
-import { BulkColValues, ColumnInfo, DocAction, isHiddenCol } from "./types";
-import { extractFieldsForSection, getColumnInfo } from "./ConsoleLayout";
+import { BulkColValues, ColumnInfo, DocAction, isHiddenCol } from "./types.js";
+import { extractFieldsForSection, getColumnInfo } from "./ConsoleLayout.js";
 import WS from "ws";
 import fetch from "node-fetch";
 

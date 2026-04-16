@@ -6,12 +6,12 @@
  */
 
 import { assert } from "chai";
-import { ConsoleConnection } from "../src/ConsoleConnection";
+import { ConsoleConnection } from "../src/ConsoleConnection.js";
 import {
   extractPages, extractSectionsForView, extractFiltersForSection,
   getLayoutSpecForView, parseLayoutSpec, computeLayout, Rect,
-} from "../src/ConsoleLayout";
-import { applySortSpec, applySectionFilters } from "../src/ConsoleMain";
+} from "../src/ConsoleLayout.js";
+import { applySortSpec, applySectionFilters } from "../src/ConsoleMain.js";
 
 function defaultVal(colType: string): any {
   const base = colType.split(":")[0];
@@ -22,12 +22,12 @@ function defaultVal(colType: string): any {
     default: return null;
   }
 }
-import { PaneState } from "../src/ConsoleRenderer";
-import { BulkColValues, DocAction } from "../src/types";
+import { PaneState } from "../src/ConsoleRenderer.js";
+import { BulkColValues, DocAction } from "../src/types.js";
 import {
   SERVER_URL, API_KEY,
   createTestDoc, createPrivateTestDoc, applyUserActions, addRows, updateRows,
-} from "./testServer";
+} from "./testServer.js";
 
 describe("ConsoleConnection (integration)", function() {
   this.timeout(30000);
@@ -1136,6 +1136,147 @@ describe("ConsoleConnection (integration)", function() {
         await conn.close().catch(() => {});
         throw e;
       }
+    });
+  });
+
+  describe("RefList section linking", function() {
+    it("filters by RefList column containing source row ID", async function() {
+      // Set up: Dates table and ToDo table with RefList:Dates linking
+      const { docId: testDocId } = await createTestDoc("reflist-link-test");
+      await applyUserActions(testDocId, [
+        ["AddTable", "Dates", [
+          { id: "Label", type: "Text", isFormula: false, formula: "" },
+        ]],
+        ["AddTable", "ToDo", [
+          { id: "Task", type: "Text", isFormula: false, formula: "" },
+          { id: "DateRefs", type: "RefList:Dates", isFormula: false, formula: "" },
+        ]],
+      ]);
+      // Add date rows
+      await addRows(testDocId, "Dates", { Label: ["Mon", "Tue", "Wed"] });
+      // Add todo rows with RefList references
+      // Row 1: linked to Dates row 1 (Mon)
+      // Row 2: linked to Dates rows 1 and 2 (Mon, Tue)
+      // Row 3: linked to Dates row 2 (Tue)
+      // Row 4: no dates
+      await addRows(testDocId, "ToDo", {
+        Task: ["Task A", "Task B", "Task C", "Task D"],
+        DateRefs: [["L", 1], ["L", 1, 2], ["L", 2], null],
+      });
+
+      const conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+      await conn.connect();
+      const meta = conn.getMetaTables();
+
+      // Find sections and column refs
+      const pages = extractPages(meta);
+      const datesPage = pages.find(p => p.name.includes("Dates"));
+      assert.isOk(datesPage);
+      const datesSections = extractSectionsForView(meta, datesPage!.viewId);
+      const datesSec = datesSections[0];
+
+      const todoPage = pages.find(p => p.name.includes("ToDo"));
+      assert.isOk(todoPage);
+      const todoSections = extractSectionsForView(meta, todoPage!.viewId);
+      const todoSec = todoSections[0];
+
+      // Find DateRefs colRef
+      const colData = meta._grist_Tables_column;
+      const colIds: string[] = colData[3].colId;
+      const colRefs: number[] = colData[2];
+      const parentIdVals: number[] = colData[3].parentId;
+      let dateRefsColRef = 0;
+      for (let i = 0; i < colIds.length; i++) {
+        if (colIds[i] === "DateRefs" && parentIdVals[i] === todoSec.tableRef) {
+          dateRefsColRef = colRefs[i];
+          break;
+        }
+      }
+      assert.isAbove(dateRefsColRef, 0);
+
+      // Create a new page with both sections, link ToDo to Dates via DateRefs
+      const r = await applyUserActions(testDocId, [
+        ["CreateViewSection", datesSec.tableRef, 0, "record", null, null],
+      ]);
+      const newViewId = r.retValues[0].viewRef;
+      const datesNewSecRef = r.retValues[0].sectionRef;
+      const r2 = await applyUserActions(testDocId, [
+        ["CreateViewSection", todoSec.tableRef, newViewId, "record", null, null],
+      ]);
+      const todoNewSecRef = r2.retValues[0].sectionRef;
+
+      // Set linking: ToDo section links to Dates section via DateRefs
+      await applyUserActions(testDocId, [
+        ["UpdateRecord", "_grist_Views_section", todoNewSecRef, {
+          linkSrcSectionRef: datesNewSecRef,
+          linkSrcColRef: 0,
+          linkTargetColRef: dateRefsColRef,
+        }],
+      ]);
+
+      await conn.close();
+
+      // Reconnect with fresh metadata
+      const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+      await conn2.connect();
+      const meta2 = conn2.getMetaTables();
+      const newSections = extractSectionsForView(meta2, newViewId);
+      assert.equal(newSections.length, 2);
+
+      const datesSecInfo = newSections.find(s => s.sectionId === datesNewSecRef)!;
+      const todoSecInfo = newSections.find(s => s.sectionId === todoNewSecRef)!;
+
+      // Fetch data
+      const datesData = await conn2.fetchTable("Dates");
+      const todoData = await conn2.fetchTable("ToDo");
+      const datesColumns = conn2.getColumnsForSection(datesSecInfo.sectionId);
+      const todoColumns = conn2.getColumnsForSection(todoSecInfo.sectionId);
+
+      // Build panes
+      const datesPane = buildPane(datesSecInfo, datesColumns, datesData.rowIds, datesData.colValues);
+      const todoPane = buildPane(todoSecInfo, todoColumns, todoData.rowIds, todoData.colValues);
+
+      // Simulate linking: Dates cursor on row 0 (Mon, rowId=1)
+      datesPane.cursorRow = 0;
+      const srcRowId = datesPane.rowIds[0]; // should be 1
+
+      // Filter todo pane by DateRefs containing srcRowId
+      const filteredRowIds: number[] = [];
+      const dateRefsValues = todoPane.colValues.DateRefs;
+      for (let i = 0; i < todoPane.rowIds.length; i++) {
+        const val = dateRefsValues[i];
+        const match = (Array.isArray(val) && val[0] === "L" && val.indexOf(srcRowId) > 0);
+        if (match) {
+          filteredRowIds.push(todoPane.rowIds[i]);
+        }
+      }
+
+      // Tasks A and B reference Mon (rowId 1)
+      const filteredTasks = filteredRowIds.map(rid => {
+        const idx = todoPane.rowIds.indexOf(rid);
+        return todoPane.colValues.Task[idx];
+      });
+      assert.deepEqual(filteredTasks, ["Task A", "Task B"],
+        "Should show tasks whose DateRefs contains Mon (rowId 1)");
+
+      // Now test with Dates cursor on row 1 (Tue, rowId=2)
+      const srcRowId2 = datesPane.rowIds[1]; // should be 2
+      const filteredRowIds2: number[] = [];
+      for (let i = 0; i < todoPane.rowIds.length; i++) {
+        const val = dateRefsValues[i];
+        const match = (Array.isArray(val) && val[0] === "L" && val.indexOf(srcRowId2) > 0);
+        if (match) {
+          filteredRowIds2.push(todoPane.rowIds[i]);
+        }
+      }
+      const filteredTasks2 = filteredRowIds2.map(rid => {
+        const idx = todoPane.rowIds.indexOf(rid);
+        return todoPane.colValues.Task[idx];
+      });
+      assert.deepEqual(filteredTasks2, ["Task B", "Task C"],
+        "Should show tasks whose DateRefs contains Tue (rowId 2)");
+
+      await conn2.close();
     });
   });
 });

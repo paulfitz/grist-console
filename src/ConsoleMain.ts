@@ -1,17 +1,19 @@
-import { BulkColValues, ColumnInfo, DocAction } from "./types";
-import { ConsoleConnection } from "./ConsoleConnection";
-import { AppState, PaneState, createInitialState, render, showCursor } from "./ConsoleRenderer";
+import { BulkColValues, ColumnInfo, DocAction } from "./types.js";
+import { ConsoleConnection } from "./ConsoleConnection.js";
+import { AppState, PaneState, createInitialState, render, showCursor } from "./ConsoleRenderer.js";
 import {
   executeAddRow, executeDeleteRow, executeSaveEdit, handleKeypress
-} from "./ConsoleInput";
+} from "./ConsoleInput.js";
 import {
   extractPages, extractSectionsForView, extractFiltersForSection,
-  getLayoutSpecForView,
+  extractCollapsedSectionIds, getLayoutSpecForView,
   parseLayoutSpec, computeLayout, getColumnInfo,
   getColIdByRef as layoutGetColIdByRef, Rect,
-} from "./ConsoleLayout";
-import { CellValue } from "./types";
-import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme";
+} from "./ConsoleLayout.js";
+import { CellValue } from "./types.js";
+import { formatCellValue } from "./ConsoleCellFormat.js";
+import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
+import { calibrateTermWidth } from "./termWidth.js";
 
 /**
  * Main entry point for the console client.
@@ -28,12 +30,14 @@ export async function consoleMain(options: {
   const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey, { verbose: options.verbose });
   const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
 
-  // Connect
+  // Calibrate terminal character widths and connect in parallel
   process.stdout.write("Connecting...\n");
-  try {
-    await conn.connect();
-  } catch (e: any) {
-    process.stderr.write(`Connection failed: ${e.message}\n`);
+  const [, connResult] = await Promise.allSettled([
+    calibrateTermWidth(),
+    conn.connect(),
+  ]);
+  if (connResult.status === "rejected") {
+    process.stderr.write(`Connection failed: ${connResult.reason?.message || connResult.reason}\n`);
     process.exit(1);
   }
 
@@ -115,6 +119,8 @@ export async function consoleMain(options: {
           doCleanup(state, conn, resolve);
           return;
         case "render": {
+          // Clear transient status on any navigation/render
+          state.statusMessage = "";
           // After cursor movement in multi-pane mode, re-run linking
           if (state.panes.length > 0) {
             applyAllSectionLinks(state, conn);
@@ -208,15 +214,60 @@ export async function consoleMain(options: {
           state.statusMessage = "";
           doRender(state);
           break;
-        case "focus_next_pane":
-          if (state.panes.length > 1) {
-            state.focusedPane = (state.focusedPane + 1) % state.panes.length;
+        case "focus_next_pane": {
+          const collapsedSet = new Set(state.collapsedPaneIndices);
+          const visibleCount = state.panes.filter((_, i) => !collapsedSet.has(i)).length;
+          if (visibleCount > 1) {
+            do {
+              state.focusedPane = (state.focusedPane + 1) % state.panes.length;
+            } while (collapsedSet.has(state.focusedPane));
           }
           doRender(state);
           break;
-        case "focus_prev_pane":
-          if (state.panes.length > 1) {
-            state.focusedPane = (state.focusedPane + state.panes.length - 1) % state.panes.length;
+        }
+        case "focus_prev_pane": {
+          const collapsedSet = new Set(state.collapsedPaneIndices);
+          const visibleCount = state.panes.filter((_, i) => !collapsedSet.has(i)).length;
+          if (visibleCount > 1) {
+            do {
+              state.focusedPane = (state.focusedPane + state.panes.length - 1) % state.panes.length;
+            } while (collapsedSet.has(state.focusedPane));
+          }
+          doRender(state);
+          break;
+        }
+        case "view_cell": {
+          // Get the current cell's full content
+          let col: ColumnInfo | undefined;
+          let raw: CellValue = null;
+          if (state.panes.length > 0) {
+            const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+            const pane = state.panes[paneIdx];
+            if (pane && pane.cursorCol < pane.columns.length) {
+              col = pane.columns[pane.cursorCol];
+              const values = pane.colValues[col.colId];
+              raw = values ? values[pane.cursorRow] : null;
+            }
+          } else {
+            if (state.cursorCol < state.columns.length) {
+              col = state.columns[state.cursorCol];
+              const values = state.colValues[col.colId];
+              raw = values ? values[state.cursorRow] : null;
+            }
+          }
+          if (col) {
+            state.cellViewerContent = formatCellValue(raw, col.type, col.widgetOptions, col.displayValues);
+            state.cellViewerScroll = 0;
+            state.mode = "cell_viewer";
+          }
+          doRender(state);
+          break;
+        }
+        case "close_overlay":
+          state.mode = "grid";
+          state.overlayPaneIndex = null;
+          if (state.panes.length > 0) {
+            applyAllSectionLinks(state, conn);
           }
           doRender(state);
           break;
@@ -336,9 +387,22 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
   const sectionIds = sections.map(s => s.sectionId);
   state.boxSpec = parseLayoutSpec(layoutSpec, sectionIds);
 
+  // Identify collapsed sections
+  const collapsedIds = extractCollapsedSectionIds(state.boxSpec);
+  state.collapsedPaneIndices = collapsedIds
+    .map(id => sectionIdToPaneIndex.get(id))
+    .filter((idx): idx is number => idx !== undefined);
+  state.overlayPaneIndex = null;
+
+  // Set focusedPane to the first visible (non-collapsed) pane
+  const collapsedSet = new Set(state.collapsedPaneIndices);
+  state.focusedPane = panes.findIndex((_, i) => !collapsedSet.has(i));
+  if (state.focusedPane < 0) { state.focusedPane = 0; }
+
   const termRows = process.stdout.rows || 24;
   const termCols = process.stdout.columns || 80;
-  const rect: Rect = { top: 0, left: 0, width: termCols, height: termRows - 2 };
+  const trayHeight = state.collapsedPaneIndices.length > 0 ? 1 : 0;
+  const rect: Rect = { top: 0, left: 0, width: termCols, height: termRows - 2 - trayHeight };
   state.layout = computeLayout(state.boxSpec, rect, sectionIdToPaneIndex);
 
   // Apply initial section linking
@@ -358,7 +422,8 @@ function recomputeLayout(state: AppState): void {
 
   const termRows = process.stdout.rows || 24;
   const termCols = process.stdout.columns || 80;
-  const rect: Rect = { top: 0, left: 0, width: termCols, height: termRows - 2 };
+  const trayHeight = state.collapsedPaneIndices.length > 0 ? 1 : 0;
+  const rect: Rect = { top: 0, left: 0, width: termCols, height: termRows - 2 - trayHeight };
   state.layout = computeLayout(state.boxSpec, rect, sectionIdToPaneIndex);
 }
 
@@ -420,9 +485,7 @@ function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
       const tgtColId = layoutGetColIdByRef(metaTables, tgtColRef);
       filterPaneRows(pane, tgtColId, srcValue);
     } else if (srcColRef === 0 && tgtColRef === 0) {
-      // Cursor sync — show all rows, sync cursor position
-      pane.rowIds = [...pane.allRowIds];
-      rebuildColValuesFromAll(pane);
+      // Cursor sync -- all rows visible, sync cursor position
       const idx = pane.rowIds.indexOf(srcRowId);
       if (idx >= 0) {
         pane.cursorRow = idx;
@@ -432,8 +495,6 @@ function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
       const srcColId = layoutGetColIdByRef(metaTables, srcColRef);
       const srcValues = srcPane.colValues[srcColId];
       const refValue = srcValues ? srcValues[srcRowIdx] : null;
-      pane.rowIds = [...pane.allRowIds];
-      rebuildColValuesFromAll(pane);
       if (typeof refValue === "number" && refValue > 0) {
         const idx = pane.rowIds.indexOf(refValue);
         if (idx >= 0) {
@@ -445,18 +506,17 @@ function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
 }
 
 /**
- * Filter a pane's rows to those where colId == value.
- * Reads from allRowIds/allColValues, writes to rowIds/colValues.
+ * Filter a pane's visible rows to those where colId == value.
+ * Reads from rowIds/colValues (already sorted/filtered by reapplySortAndFilter),
+ * writes filtered result back to rowIds/colValues.
  */
 function filterPaneRows(pane: PaneState, colId: string, value: any): void {
   if (!colId) {
-    rebuildColValuesFromAll(pane);
     return;
   }
 
-  const allValues = pane.allColValues[colId];
-  if (!allValues) {
-    rebuildColValuesFromAll(pane);
+  const colValues = pane.colValues[colId];
+  if (!colValues) {
     return;
   }
 
@@ -466,15 +526,17 @@ function filterPaneRows(pane: PaneState, colId: string, value: any): void {
     filteredColValues[col.colId] = [];
   }
 
-  for (let i = 0; i < pane.allRowIds.length; i++) {
-    const cellValue = allValues[i];
+  for (let i = 0; i < pane.rowIds.length; i++) {
+    const cellValue = colValues[i];
     const match = cellValue === value ||
       (typeof cellValue === "number" && cellValue === value) ||
-      (Array.isArray(cellValue) && cellValue[0] === "R" && cellValue[2] === value);
+      (Array.isArray(cellValue) && cellValue[0] === "R" && cellValue[2] === value) ||
+      // RefList: ["L", id1, id2, ...] -- check if list contains the value
+      (Array.isArray(cellValue) && cellValue[0] === "L" && cellValue.indexOf(value) > 0);
     if (match) {
-      filteredRowIds.push(pane.allRowIds[i]);
+      filteredRowIds.push(pane.rowIds[i]);
       for (const col of pane.columns) {
-        const vals = pane.allColValues[col.colId];
+        const vals = pane.colValues[col.colId];
         filteredColValues[col.colId].push(vals ? vals[i] : null);
       }
     }
@@ -485,11 +547,6 @@ function filterPaneRows(pane: PaneState, colId: string, value: any): void {
   if (pane.cursorRow >= pane.rowIds.length) {
     pane.cursorRow = Math.max(0, pane.rowIds.length - 1);
   }
-}
-
-function rebuildColValuesFromAll(pane: PaneState): void {
-  pane.rowIds = [...pane.allRowIds];
-  pane.colValues = copyColValues(pane.allColValues);
 }
 
 function copyColValues(cv: BulkColValues): BulkColValues {
