@@ -1,11 +1,13 @@
 import { formatCellValue, parseCellInput } from "../src/ConsoleCellFormat";
 import {
   extractPages, extractSectionsForView, extractFieldsForSection,
+  extractFiltersForSection,
   getColumnInfo, getColIdByRef, parseLayoutSpec, computeLayout,
   getLayoutSpecForView, Rect,
 } from "../src/ConsoleLayout";
 import { createInitialState, render, PaneState } from "../src/ConsoleRenderer";
 import { handleKeypress } from "../src/ConsoleInput";
+import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain";
 import { parseGristDocUrl } from "../src/index";
 import { GristObjCode } from "../src/types";
 
@@ -539,7 +541,7 @@ describe("ConsoleClient", function() {
           sectionInfo: {
             sectionId: 1, tableRef: 1, tableId: "People", parentKey: "record",
             title: "People",
-            linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+            linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
           },
           columns: [
             { colId: "Name", type: "Text", label: "Name" },
@@ -554,7 +556,7 @@ describe("ConsoleClient", function() {
           sectionInfo: {
             sectionId: 2, tableRef: 2, tableId: "Projects", parentKey: "record",
             title: "Projects",
-            linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+            linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
           },
           columns: [
             { colId: "Title", type: "Text", label: "Title" },
@@ -592,7 +594,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 1, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
-          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [
           { colId: "Name", type: "Text", label: "Name" },
@@ -705,7 +707,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 10, tableRef: 1, tableId: "Dogs", parentKey: "record",
           title: "Dogs",
-          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [
           { colId: "Name", type: "Text", label: "Name" },
@@ -721,7 +723,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 20, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
-          linkSrcSectionRef: 10, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 10, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [
           { colId: "Name", type: "Text", label: "Name" },
@@ -759,7 +761,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 10, tableRef: 1, tableId: "Dogs", parentKey: "record",
           title: "Dogs",
-          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [{ colId: "Name", type: "Text", label: "Name" }],
         rowIds: [1, 2, 3],
@@ -772,7 +774,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 20, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
-          linkSrcSectionRef: 10, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 10, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [{ colId: "Name", type: "Text", label: "Name" }],
         rowIds: [1, 2, 3],
@@ -803,7 +805,7 @@ describe("ConsoleClient", function() {
         sectionInfo: {
           sectionId: 1, tableRef: 1, tableId: "Data", parentKey: "chart",
           title: "My Chart",
-          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [],
         rowIds: [], allRowIds: [],
@@ -815,6 +817,308 @@ describe("ConsoleClient", function() {
       const output = render(state);
       assert.include(output, "My Chart");
       assert.include(output, "chart not supported");
+    });
+  });
+
+  describe("sorting", function() {
+    // Helper: build a minimal PaneState with allRowIds/allColValues
+    function makePaneData(rowIds: number[], colValues: Record<string, any[]>): PaneState {
+      return {
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: Object.keys(colValues).map(colId => ({ colId, type: "Text", label: colId })),
+        rowIds: [...rowIds],
+        allRowIds: [...rowIds],
+        colValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
+        allColValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+    }
+
+    // Minimal metaTables with _grist_Tables_column mapping colRef -> colId
+    function makeMetaWithCols(cols: Array<{ ref: number; colId: string }>) {
+      return {
+        _grist_Tables_column: [
+          "TableData", "_grist_Tables_column",
+          cols.map(c => c.ref),
+          {
+            colId: cols.map(c => c.colId),
+            parentId: cols.map(() => 1),
+            type: cols.map(() => "Text"),
+            label: cols.map(c => c.colId),
+          },
+        ],
+      };
+    }
+
+    it("sorts ascending by a single column", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"], Age: [35, 30, 25] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
+      applySortSpec(pane, "[10]", meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.allColValues.Age, [30, 25, 35]);
+      assert.deepEqual(pane.allRowIds, [2, 3, 1]);
+    });
+
+    it("sorts descending by a single column", function() {
+      const pane = makePaneData([1, 2, 3], { Age: [30, 25, 35] });
+      const meta = makeMetaWithCols([{ ref: 5, colId: "Age" }]);
+      applySortSpec(pane, "[-5]", meta);
+      assert.deepEqual(pane.allColValues.Age, [35, 30, 25]);
+      assert.deepEqual(pane.allRowIds, [3, 1, 2]);
+    });
+
+    it("sorts by multiple columns", function() {
+      const pane = makePaneData([1, 2, 3, 4], {
+        City: ["NYC", "LA", "NYC", "LA"],
+        Name: ["Bob", "Alice", "Alice", "Bob"],
+      });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "City" }, { ref: 11, colId: "Name" }]);
+      // Sort by City asc, then Name asc
+      applySortSpec(pane, "[10, 11]", meta);
+      assert.deepEqual(pane.allColValues.City, ["LA", "LA", "NYC", "NYC"]);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Alice", "Bob"]);
+    });
+
+    it("handles string-format sort specs with flags", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
+      applySortSpec(pane, '["10:emptyLast;naturalSort"]', meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+    });
+
+    it("handles negative string-format sort specs", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
+      applySortSpec(pane, '["-10"]', meta);
+      assert.deepEqual(pane.allColValues.Name, ["Charlie", "Bob", "Alice"]);
+    });
+
+    it("does nothing with empty sort spec", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["C", "A", "B"] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
+      applySortSpec(pane, "[]", meta);
+      assert.deepEqual(pane.allColValues.Name, ["C", "A", "B"]);
+    });
+
+    it("does nothing with invalid JSON", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["C", "A", "B"] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
+      applySortSpec(pane, "not json", meta);
+      assert.deepEqual(pane.allColValues.Name, ["C", "A", "B"]);
+    });
+
+    it("sorts nulls before other values", function() {
+      const pane = makePaneData([1, 2, 3], { Val: [10, null, 5] });
+      const meta = makeMetaWithCols([{ ref: 10, colId: "Val" }]);
+      applySortSpec(pane, "[10]", meta);
+      assert.deepEqual(pane.allColValues.Val, [null, 5, 10]);
+    });
+  });
+
+  describe("compareCellValues", function() {
+    it("compares numbers", function() {
+      assert.isBelow(compareCellValues(1, 2), 0);
+      assert.isAbove(compareCellValues(10, 3), 0);
+      assert.equal(compareCellValues(5, 5), 0);
+    });
+
+    it("compares strings", function() {
+      assert.isBelow(compareCellValues("apple", "banana"), 0);
+      assert.isAbove(compareCellValues("z", "a"), 0);
+    });
+
+    it("puts null before other values", function() {
+      assert.isBelow(compareCellValues(null, 1), 0);
+      assert.isAbove(compareCellValues(1, null), 0);
+      assert.equal(compareCellValues(null, null), 0);
+    });
+
+    it("compares booleans", function() {
+      assert.isBelow(compareCellValues(false, true), 0);
+      assert.isAbove(compareCellValues(true, false), 0);
+    });
+  });
+
+  describe("filtering", function() {
+    function makePaneData(rowIds: number[], colValues: Record<string, any[]>): PaneState {
+      return {
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: Object.keys(colValues).map(colId => ({ colId, type: "Text", label: colId })),
+        rowIds: [...rowIds],
+        allRowIds: [...rowIds],
+        colValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
+        allColValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+    }
+
+    function makeMetaWithFilters(
+      cols: Array<{ ref: number; colId: string }>,
+      filters: Array<{ sectionId: number; colRef: number; filter: string }>
+    ) {
+      return {
+        _grist_Tables_column: [
+          "TableData", "_grist_Tables_column",
+          cols.map(c => c.ref),
+          {
+            colId: cols.map(c => c.colId),
+            parentId: cols.map(() => 1),
+            type: cols.map(() => "Text"),
+            label: cols.map(c => c.colId),
+          },
+        ],
+        _grist_Filters: [
+          "TableData", "_grist_Filters",
+          filters.map((_, i) => i + 1),
+          {
+            viewSectionRef: filters.map(f => f.sectionId),
+            colRef: filters.map(f => f.colRef),
+            filter: filters.map(f => f.filter),
+            pinned: filters.map(() => true),
+          },
+        ],
+      };
+    }
+
+    it("applies inclusion filter", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Name" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"included":["Alice","Charlie"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Charlie"]);
+      assert.deepEqual(pane.allRowIds, [1, 3]);
+    });
+
+    it("applies exclusion filter", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Name" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"excluded":["Bob"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Charlie"]);
+      assert.deepEqual(pane.allRowIds, [1, 3]);
+    });
+
+    it("empty excluded means no filter", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Name" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"excluded":[]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+    });
+
+    it("applies range filter (min only)", function() {
+      const pane = makePaneData([1, 2, 3], { Age: [20, 30, 40] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Age" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"min":25}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Age, [30, 40]);
+    });
+
+    it("applies range filter (max only)", function() {
+      const pane = makePaneData([1, 2, 3], { Age: [20, 30, 40] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Age" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"max":30}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Age, [20, 30]);
+    });
+
+    it("applies range filter (min and max)", function() {
+      const pane = makePaneData([1, 2, 3, 4], { Age: [10, 20, 30, 40] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Age" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"min":15,"max":35}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Age, [20, 30]);
+    });
+
+    it("applies multiple filters across columns", function() {
+      const pane = makePaneData([1, 2, 3, 4], {
+        City: ["NYC", "LA", "NYC", "LA"],
+        Age: [25, 30, 35, 20],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "City" }, { ref: 11, colId: "Age" }],
+        [
+          { sectionId: 1, colRef: 10, filter: '{"included":["NYC"]}' },
+          { sectionId: 1, colRef: 11, filter: '{"min":30}' },
+        ]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.City, ["NYC"]);
+      assert.deepEqual(pane.allColValues.Age, [35]);
+      assert.deepEqual(pane.allRowIds, [3]);
+    });
+
+    it("ignores filters for other sections", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Name" }],
+        [{ sectionId: 99, colRef: 10, filter: '{"included":["Alice"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+    });
+
+    it("handles no _grist_Filters table", function() {
+      const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
+      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
+      applySectionFilters(pane, 1, meta);
+      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+    });
+  });
+
+  describe("extractFiltersForSection", function() {
+    it("extracts filters for a section", function() {
+      const meta = {
+        _grist_Filters: [
+          "TableData", "_grist_Filters",
+          [1, 2, 3],
+          {
+            viewSectionRef: [10, 10, 20],
+            colRef: [100, 200, 100],
+            filter: ['{"included":["a"]}', '{"excluded":["b"]}', '{"min":5}'],
+            pinned: [true, true, true],
+          },
+        ],
+      };
+      const filters = extractFiltersForSection(meta, 10);
+      assert.equal(filters.size, 2);
+      assert.equal(filters.get(100), '{"included":["a"]}');
+      assert.equal(filters.get(200), '{"excluded":["b"]}');
+    });
+
+    it("returns empty map when no filters exist", function() {
+      const meta = {
+        _grist_Filters: [
+          "TableData", "_grist_Filters",
+          [],
+          { viewSectionRef: [], colRef: [], filter: [], pinned: [] },
+        ],
+      };
+      assert.equal(extractFiltersForSection(meta, 10).size, 0);
+    });
+
+    it("returns empty map when _grist_Filters is missing", function() {
+      assert.equal(extractFiltersForSection({}, 10).size, 0);
     });
   });
 

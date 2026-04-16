@@ -5,10 +5,12 @@ import {
   executeAddRow, executeDeleteRow, executeSaveEdit, handleKeypress
 } from "./ConsoleInput";
 import {
-  extractPages, extractSectionsForView, getLayoutSpecForView,
+  extractPages, extractSectionsForView, extractFiltersForSection,
+  getLayoutSpecForView,
   parseLayoutSpec, computeLayout, getColumnInfo,
   getColIdByRef as layoutGetColIdByRef, Rect,
 } from "./ConsoleLayout";
+import { CellValue } from "./types";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme";
 
 /**
@@ -323,6 +325,17 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
     });
   }
 
+  // Apply section-level sorting and filtering before section linking
+  for (const pane of panes) {
+    applySectionFilters(pane, pane.sectionInfo.sectionId, metaTables);
+    if (pane.sectionInfo.sortColRefs) {
+      applySortSpec(pane, pane.sectionInfo.sortColRefs, metaTables);
+    }
+    // Copy sorted/filtered data to visible rows (linking may further filter)
+    pane.rowIds = [...pane.allRowIds];
+    pane.colValues = copyColValues(pane.allColValues);
+  }
+
   state.panes = panes;
   state.focusedPane = 0;
 
@@ -475,6 +488,157 @@ function copyColValues(cv: BulkColValues): BulkColValues {
     result[k] = [...v];
   }
   return result;
+}
+
+/**
+ * Parse sortColRefs JSON (e.g. '[2, -3, "4:emptyLast"]') and sort pane data in place.
+ * Positive colRef = ascending, negative = descending.
+ */
+export function applySortSpec(
+  pane: PaneState, sortColRefs: string, metaTables: any
+): void {
+  let sortSpec: Array<number | string>;
+  try {
+    sortSpec = JSON.parse(sortColRefs);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(sortSpec) || sortSpec.length === 0) { return; }
+
+  // Parse each sort entry into { colId, direction }
+  const sortCols: Array<{ colId: string; direction: 1 | -1 }> = [];
+  for (const entry of sortSpec) {
+    let colRef: number;
+    let direction: 1 | -1;
+    if (typeof entry === "number") {
+      colRef = Math.abs(entry);
+      direction = entry >= 0 ? 1 : -1;
+    } else {
+      // String form: "-3:emptyLast;naturalSort" -- strip flags, parse sign + ref
+      const match = String(entry).match(/^(-)?(\d+)/);
+      if (!match) { continue; }
+      direction = match[1] ? -1 : 1;
+      colRef = parseInt(match[2], 10);
+    }
+    const colId = layoutGetColIdByRef(metaTables, colRef);
+    if (colId && pane.allColValues[colId]) {
+      sortCols.push({ colId, direction });
+    }
+  }
+  if (sortCols.length === 0) { return; }
+
+  // Build index array sorted by the sort columns
+  const len = pane.allRowIds.length;
+  const indices = Array.from({ length: len }, (_, i) => i);
+  indices.sort((a, b) => {
+    for (const { colId, direction } of sortCols) {
+      const va = pane.allColValues[colId][a];
+      const vb = pane.allColValues[colId][b];
+      const cmp = compareCellValues(va, vb);
+      if (cmp !== 0) { return cmp * direction; }
+    }
+    return 0;
+  });
+
+  // Reorder allRowIds and allColValues by sorted indices
+  pane.allRowIds = indices.map(i => pane.allRowIds[i]);
+  for (const colId of Object.keys(pane.allColValues)) {
+    pane.allColValues[colId] = indices.map(i => pane.allColValues[colId][i]);
+  }
+}
+
+/**
+ * Compare two cell values for sorting. Nulls sort first, then numbers, then strings.
+ */
+export function compareCellValues(a: CellValue, b: CellValue): number {
+  if (a === b) { return 0; }
+  if (a == null) { return -1; }
+  if (b == null) { return 1; }
+  if (typeof a === "number" && typeof b === "number") { return a - b; }
+  if (typeof a === "boolean" && typeof b === "boolean") { return (a ? 1 : 0) - (b ? 1 : 0); }
+  return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+}
+
+/**
+ * Apply _grist_Filters to a pane's allRowIds/allColValues, removing rows that
+ * don't pass the filter.
+ */
+export function applySectionFilters(
+  pane: PaneState, sectionId: number, metaTables: any
+): void {
+  const filterMap = extractFiltersForSection(metaTables, sectionId);
+  if (filterMap.size === 0) { return; }
+
+  // Build a filter function for each column
+  const colFilters: Array<{ colId: string; test: (val: CellValue) => boolean }> = [];
+  for (const [colRef, filterJson] of filterMap) {
+    const colId = layoutGetColIdByRef(metaTables, colRef);
+    if (!colId || !pane.allColValues[colId]) { continue; }
+
+    let spec: any;
+    try {
+      spec = JSON.parse(filterJson);
+    } catch {
+      continue;
+    }
+    if (!spec || typeof spec !== "object") { continue; }
+
+    if (spec.min !== undefined || spec.max !== undefined) {
+      // Range filter
+      const min = typeof spec.min === "number" ? spec.min : undefined;
+      const max = typeof spec.max === "number" ? spec.max : undefined;
+      colFilters.push({
+        colId,
+        test: (val) => {
+          if (typeof val !== "number") { return false; }
+          if (min !== undefined && val < min) { return false; }
+          if (max !== undefined && val > max) { return false; }
+          return true;
+        },
+      });
+    } else if (spec.included) {
+      // Inclusion filter -- only show listed values
+      const values = new Set(spec.included.map(
+        (v: CellValue) => Array.isArray(v) ? JSON.stringify(v) : v
+      ));
+      colFilters.push({
+        colId,
+        test: (val) => values.has(Array.isArray(val) ? JSON.stringify(val) : val),
+      });
+    } else if (spec.excluded) {
+      // Exclusion filter -- hide listed values
+      if (spec.excluded.length === 0) { continue; } // empty excluded = no filter
+      const values = new Set(spec.excluded.map(
+        (v: CellValue) => Array.isArray(v) ? JSON.stringify(v) : v
+      ));
+      colFilters.push({
+        colId,
+        test: (val) => !values.has(Array.isArray(val) ? JSON.stringify(val) : val),
+      });
+    }
+  }
+
+  if (colFilters.length === 0) { return; }
+
+  // Filter rows
+  const newRowIds: number[] = [];
+  const newColValues: BulkColValues = {};
+  for (const colId of Object.keys(pane.allColValues)) {
+    newColValues[colId] = [];
+  }
+
+  for (let i = 0; i < pane.allRowIds.length; i++) {
+    const pass = colFilters.every(({ colId, test }) => test(pane.allColValues[colId][i]));
+    if (pass) {
+      newRowIds.push(pane.allRowIds[i]);
+      for (const colId of Object.keys(pane.allColValues)) {
+        newColValues[colId].push(pane.allColValues[colId][i]);
+      }
+    }
+  }
+
+  pane.allRowIds = newRowIds;
+  pane.allColValues = newColValues;
 }
 
 function doRender(state: AppState): void {

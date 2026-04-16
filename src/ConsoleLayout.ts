@@ -19,6 +19,7 @@ export interface SectionInfo {
   linkSrcSectionRef: number;
   linkSrcColRef: number;
   linkTargetColRef: number;
+  sortColRefs: string;
 }
 
 export interface Rect {
@@ -108,6 +109,7 @@ export function extractSectionsForView(metaTables: any, viewId: number): Section
       linkSrcSectionRef: sectionVals.linkSrcSectionRef?.[i] || 0,
       linkSrcColRef: sectionVals.linkSrcColRef?.[i] || 0,
       linkTargetColRef: sectionVals.linkTargetColRef?.[i] || 0,
+      sortColRefs: sectionVals.sortColRefs?.[i] || "",
     });
   }
   return sections;
@@ -174,6 +176,30 @@ export function getColumnInfo(metaTables: any, colRef: number): ColumnInfo | nul
 export function getColIdByRef(metaTables: any, colRef: number): string {
   const info = getColumnInfo(metaTables, colRef);
   return info ? info.colId : "";
+}
+
+/**
+ * Extract filter specs from _grist_Filters for a given section.
+ * Returns a map of colRef -> filter JSON string.
+ */
+export function extractFiltersForSection(
+  metaTables: any, sectionId: number
+): Map<number, string> {
+  const filtersData = metaTables._grist_Filters;
+  if (!filtersData) { return new Map(); }
+
+  const filterIds: number[] = filtersData[2];
+  const filterVals = filtersData[3];
+  const result = new Map<number, string>();
+
+  for (let i = 0; i < filterIds.length; i++) {
+    if (filterVals.viewSectionRef[i] !== sectionId) { continue; }
+    const filter = filterVals.filter?.[i];
+    if (filter) {
+      result.set(filterVals.colRef[i], filter);
+    }
+  }
+  return result;
 }
 
 /**
