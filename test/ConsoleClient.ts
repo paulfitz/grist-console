@@ -858,17 +858,17 @@ describe("ConsoleClient", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"], Age: [35, 30, 25] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
       applySortSpec(pane, "[10]", meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
-      assert.deepEqual(pane.allColValues.Age, [30, 25, 35]);
-      assert.deepEqual(pane.allRowIds, [2, 3, 1]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.colValues.Age, [30, 25, 35]);
+      assert.deepEqual(pane.rowIds, [2, 3, 1]);
     });
 
     it("sorts descending by a single column", function() {
       const pane = makePaneData([1, 2, 3], { Age: [30, 25, 35] });
       const meta = makeMetaWithCols([{ ref: 5, colId: "Age" }]);
       applySortSpec(pane, "[-5]", meta);
-      assert.deepEqual(pane.allColValues.Age, [35, 30, 25]);
-      assert.deepEqual(pane.allRowIds, [3, 1, 2]);
+      assert.deepEqual(pane.colValues.Age, [35, 30, 25]);
+      assert.deepEqual(pane.rowIds, [3, 1, 2]);
     });
 
     it("sorts by multiple columns", function() {
@@ -879,43 +879,43 @@ describe("ConsoleClient", function() {
       const meta = makeMetaWithCols([{ ref: 10, colId: "City" }, { ref: 11, colId: "Name" }]);
       // Sort by City asc, then Name asc
       applySortSpec(pane, "[10, 11]", meta);
-      assert.deepEqual(pane.allColValues.City, ["LA", "LA", "NYC", "NYC"]);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Alice", "Bob"]);
+      assert.deepEqual(pane.colValues.City, ["LA", "LA", "NYC", "NYC"]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Alice", "Bob"]);
     });
 
     it("handles string-format sort specs with flags", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
       applySortSpec(pane, '["10:emptyLast;naturalSort"]', meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
     });
 
     it("handles negative string-format sort specs", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["Charlie", "Alice", "Bob"] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
       applySortSpec(pane, '["-10"]', meta);
-      assert.deepEqual(pane.allColValues.Name, ["Charlie", "Bob", "Alice"]);
+      assert.deepEqual(pane.colValues.Name, ["Charlie", "Bob", "Alice"]);
     });
 
     it("does nothing with empty sort spec", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["C", "A", "B"] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
       applySortSpec(pane, "[]", meta);
-      assert.deepEqual(pane.allColValues.Name, ["C", "A", "B"]);
+      assert.deepEqual(pane.colValues.Name, ["C", "A", "B"]);
     });
 
     it("does nothing with invalid JSON", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["C", "A", "B"] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Name" }]);
       applySortSpec(pane, "not json", meta);
-      assert.deepEqual(pane.allColValues.Name, ["C", "A", "B"]);
+      assert.deepEqual(pane.colValues.Name, ["C", "A", "B"]);
     });
 
     it("sorts nulls before other values", function() {
       const pane = makePaneData([1, 2, 3], { Val: [10, null, 5] });
       const meta = makeMetaWithCols([{ ref: 10, colId: "Val" }]);
       applySortSpec(pane, "[10]", meta);
-      assert.deepEqual(pane.allColValues.Val, [null, 5, 10]);
+      assert.deepEqual(pane.colValues.Val, [null, 5, 10]);
     });
   });
 
@@ -995,8 +995,8 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"included":["Alice","Charlie"]}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Charlie"]);
-      assert.deepEqual(pane.allRowIds, [1, 3]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
+      assert.deepEqual(pane.rowIds, [1, 3]);
     });
 
     it("applies exclusion filter", function() {
@@ -1006,8 +1006,8 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"excluded":["Bob"]}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Charlie"]);
-      assert.deepEqual(pane.allRowIds, [1, 3]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
+      assert.deepEqual(pane.rowIds, [1, 3]);
     });
 
     it("empty excluded means no filter", function() {
@@ -1017,7 +1017,7 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"excluded":[]}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
     });
 
     it("applies range filter (min only)", function() {
@@ -1027,7 +1027,7 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"min":25}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Age, [30, 40]);
+      assert.deepEqual(pane.colValues.Age, [30, 40]);
     });
 
     it("applies range filter (max only)", function() {
@@ -1037,7 +1037,7 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"max":30}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Age, [20, 30]);
+      assert.deepEqual(pane.colValues.Age, [20, 30]);
     });
 
     it("applies range filter (min and max)", function() {
@@ -1047,7 +1047,7 @@ describe("ConsoleClient", function() {
         [{ sectionId: 1, colRef: 10, filter: '{"min":15,"max":35}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Age, [20, 30]);
+      assert.deepEqual(pane.colValues.Age, [20, 30]);
     });
 
     it("applies multiple filters across columns", function() {
@@ -1063,9 +1063,9 @@ describe("ConsoleClient", function() {
         ]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.City, ["NYC"]);
-      assert.deepEqual(pane.allColValues.Age, [35]);
-      assert.deepEqual(pane.allRowIds, [3]);
+      assert.deepEqual(pane.colValues.City, ["NYC"]);
+      assert.deepEqual(pane.colValues.Age, [35]);
+      assert.deepEqual(pane.rowIds, [3]);
     });
 
     it("ignores filters for other sections", function() {
@@ -1075,14 +1075,14 @@ describe("ConsoleClient", function() {
         [{ sectionId: 99, colRef: 10, filter: '{"included":["Alice"]}' }]
       );
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
     });
 
     it("handles no _grist_Filters table", function() {
       const pane = makePaneData([1, 2, 3], { Name: ["Alice", "Bob", "Charlie"] });
       const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
       applySectionFilters(pane, 1, meta);
-      assert.deepEqual(pane.allColValues.Name, ["Alice", "Bob", "Charlie"]);
+      assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
     });
   });
 

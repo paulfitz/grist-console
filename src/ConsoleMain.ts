@@ -180,6 +180,9 @@ export async function consoleMain(options: {
           break;
         case "add_row":
           await executeAddRow(state, conn);
+          if (state.panes.length > 0) {
+            applyAllSectionLinks(state, conn);
+          }
           doRender(state);
           break;
         case "delete_row":
@@ -325,17 +328,6 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
     });
   }
 
-  // Apply section-level sorting and filtering before section linking
-  for (const pane of panes) {
-    applySectionFilters(pane, pane.sectionInfo.sectionId, metaTables);
-    if (pane.sectionInfo.sortColRefs) {
-      applySortSpec(pane, pane.sectionInfo.sortColRefs, metaTables);
-    }
-    // Copy sorted/filtered data to visible rows (linking may further filter)
-    pane.rowIds = [...pane.allRowIds];
-    pane.colValues = copyColValues(pane.allColValues);
-  }
-
   state.panes = panes;
   state.focusedPane = 0;
 
@@ -371,11 +363,29 @@ function recomputeLayout(state: AppState): void {
 }
 
 /**
+ * Copy all* to visible, then apply sorting and filtering to the visible copy.
+ * This keeps all* as the unmodified server data so it can be re-applied safely.
+ */
+function reapplySortAndFilter(pane: PaneState, metaTables: any): void {
+  pane.rowIds = [...pane.allRowIds];
+  pane.colValues = copyColValues(pane.allColValues);
+  applySectionFilters(pane, pane.sectionInfo.sectionId, metaTables);
+  if (pane.sectionInfo.sortColRefs) {
+    applySortSpec(pane, pane.sectionInfo.sortColRefs, metaTables);
+  }
+}
+
+/**
  * Apply section linking across all panes.
  * For each pane with linkSrcSectionRef, filter its rows based on the source pane's cursor.
  */
 function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
   const metaTables = conn.getMetaTables();
+
+  // Re-apply sort/filter to all panes before linking
+  for (const pane of state.panes) {
+    reapplySortAndFilter(pane, metaTables);
+  }
 
   for (const pane of state.panes) {
     const srcRef = pane.sectionInfo.linkSrcSectionRef;
@@ -491,8 +501,8 @@ function copyColValues(cv: BulkColValues): BulkColValues {
 }
 
 /**
- * Parse sortColRefs JSON (e.g. '[2, -3, "4:emptyLast"]') and sort pane data in place.
- * Positive colRef = ascending, negative = descending.
+ * Parse sortColRefs JSON (e.g. '[2, -3, "4:emptyLast"]') and sort pane's visible
+ * data (rowIds/colValues) in place. Positive colRef = ascending, negative = descending.
  */
 export function applySortSpec(
   pane: PaneState, sortColRefs: string, metaTables: any
@@ -521,29 +531,29 @@ export function applySortSpec(
       colRef = parseInt(match[2], 10);
     }
     const colId = layoutGetColIdByRef(metaTables, colRef);
-    if (colId && pane.allColValues[colId]) {
+    if (colId && pane.colValues[colId]) {
       sortCols.push({ colId, direction });
     }
   }
   if (sortCols.length === 0) { return; }
 
   // Build index array sorted by the sort columns
-  const len = pane.allRowIds.length;
+  const len = pane.rowIds.length;
   const indices = Array.from({ length: len }, (_, i) => i);
   indices.sort((a, b) => {
     for (const { colId, direction } of sortCols) {
-      const va = pane.allColValues[colId][a];
-      const vb = pane.allColValues[colId][b];
+      const va = pane.colValues[colId][a];
+      const vb = pane.colValues[colId][b];
       const cmp = compareCellValues(va, vb);
       if (cmp !== 0) { return cmp * direction; }
     }
     return 0;
   });
 
-  // Reorder allRowIds and allColValues by sorted indices
-  pane.allRowIds = indices.map(i => pane.allRowIds[i]);
-  for (const colId of Object.keys(pane.allColValues)) {
-    pane.allColValues[colId] = indices.map(i => pane.allColValues[colId][i]);
+  // Reorder rowIds and colValues by sorted indices
+  pane.rowIds = indices.map(i => pane.rowIds[i]);
+  for (const colId of Object.keys(pane.colValues)) {
+    pane.colValues[colId] = indices.map(i => pane.colValues[colId][i]);
   }
 }
 
@@ -560,8 +570,8 @@ export function compareCellValues(a: CellValue, b: CellValue): number {
 }
 
 /**
- * Apply _grist_Filters to a pane's allRowIds/allColValues, removing rows that
- * don't pass the filter.
+ * Apply _grist_Filters to a pane's visible rowIds/colValues, removing rows that
+ * don't pass the filter. Does not modify allRowIds/allColValues.
  */
 export function applySectionFilters(
   pane: PaneState, sectionId: number, metaTables: any
@@ -573,7 +583,7 @@ export function applySectionFilters(
   const colFilters: Array<{ colId: string; test: (val: CellValue) => boolean }> = [];
   for (const [colRef, filterJson] of filterMap) {
     const colId = layoutGetColIdByRef(metaTables, colRef);
-    if (!colId || !pane.allColValues[colId]) { continue; }
+    if (!colId || !pane.colValues[colId]) { continue; }
 
     let spec: any;
     try {
@@ -623,22 +633,40 @@ export function applySectionFilters(
   // Filter rows
   const newRowIds: number[] = [];
   const newColValues: BulkColValues = {};
-  for (const colId of Object.keys(pane.allColValues)) {
+  for (const colId of Object.keys(pane.colValues)) {
     newColValues[colId] = [];
   }
 
-  for (let i = 0; i < pane.allRowIds.length; i++) {
-    const pass = colFilters.every(({ colId, test }) => test(pane.allColValues[colId][i]));
+  for (let i = 0; i < pane.rowIds.length; i++) {
+    const pass = colFilters.every(({ colId, test }) => test(pane.colValues[colId][i]));
     if (pass) {
-      newRowIds.push(pane.allRowIds[i]);
-      for (const colId of Object.keys(pane.allColValues)) {
-        newColValues[colId].push(pane.allColValues[colId][i]);
+      newRowIds.push(pane.rowIds[i]);
+      for (const colId of Object.keys(pane.colValues)) {
+        newColValues[colId].push(pane.colValues[colId][i]);
       }
     }
   }
 
-  pane.allRowIds = newRowIds;
-  pane.allColValues = newColValues;
+  pane.rowIds = newRowIds;
+  pane.colValues = newColValues;
+}
+
+/**
+ * Return the default value for a column type when the server omits it from an AddRecord action.
+ */
+function defaultForColumnType(colType: string): CellValue {
+  const baseType = colType.split(":")[0];
+  switch (baseType) {
+    case "Bool": return false;
+    case "Int":
+    case "Numeric":
+    case "ManualSortPos": return 0;
+    case "Text":
+    case "Choice": return "";
+    case "ChoiceList":
+    case "RefList": return null;
+    default: return null;
+  }
 }
 
 function doRender(state: AppState): void {
@@ -711,7 +739,7 @@ function applyDocActions(state: AppState, actions: DocAction[]): void {
           if (!state.colValues[col.colId]) {
             state.colValues[col.colId] = [];
           }
-          state.colValues[col.colId].push(colValues[col.colId] ?? null);
+          state.colValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
         }
         break;
       }
@@ -724,7 +752,7 @@ function applyDocActions(state: AppState, actions: DocAction[]): void {
               state.colValues[col.colId] = [];
             }
             const vals = colValues[col.colId];
-            state.colValues[col.colId].push(vals ? vals[i] : null);
+            state.colValues[col.colId].push(vals ? vals[i] : defaultForColumnType(col.type));
           }
         }
         break;
@@ -827,7 +855,7 @@ function applyDocActionToPane(pane: PaneState, action: DocAction): void {
         if (!pane.allColValues[col.colId]) {
           pane.allColValues[col.colId] = [];
         }
-        pane.allColValues[col.colId].push(colValues[col.colId] ?? null);
+        pane.allColValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
       }
       // Also add to visible (linking will re-filter next)
       pane.rowIds.push(rowId);
@@ -835,7 +863,7 @@ function applyDocActionToPane(pane: PaneState, action: DocAction): void {
         if (!pane.colValues[col.colId]) {
           pane.colValues[col.colId] = [];
         }
-        pane.colValues[col.colId].push(colValues[col.colId] ?? null);
+        pane.colValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
       }
       break;
     }
@@ -848,7 +876,7 @@ function applyDocActionToPane(pane: PaneState, action: DocAction): void {
           if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
           if (!pane.colValues[col.colId]) { pane.colValues[col.colId] = []; }
           const vals = colValues[col.colId];
-          const v = vals ? vals[i] : null;
+          const v = vals ? vals[i] : defaultForColumnType(col.type);
           pane.allColValues[col.colId].push(v);
           pane.colValues[col.colId].push(v);
         }
