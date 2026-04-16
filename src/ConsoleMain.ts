@@ -21,8 +21,9 @@ export async function consoleMain(options: {
   table?: string;
   theme?: Theme;
   pageId?: number;
+  verbose?: boolean;
 }): Promise<void> {
-  const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey);
+  const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey, { verbose: options.verbose });
   const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
 
   // Connect

@@ -4,7 +4,7 @@ A terminal UI for [Grist](https://www.getgrist.com/) documents. Browse pages, ed
 
 This is a fun side project, not a serious productivity tool. Heavy use of vibe coding.
 
-**Big caveat:** grist-core's WebSocket path only authenticates via session cookies, not API keys. So grist-console can only open **publicly accessible documents** (shared with "everyone"). Private docs will fail with "No view access" even with a valid API key. This is a grist-core limitation — the REST API respects API keys, but the WebSocket upgrade handler ignores them.
+Works with both private documents (using an API key) and publicly shared documents (no key needed).
 
 ## Install
 
@@ -19,7 +19,13 @@ npm install -g grist-console
 grist-console https://templates.getgrist.com/5iMYwmESm33J/Rental-Management
 ```
 
-You can also pass `--api-key <key>` or set `GRIST_API_KEY`. Use `--table <name>` to jump straight to a specific table.
+You can also pass `--api-key <key>` or set `GRIST_API_KEY`. Use `--table <name>` to jump straight to a specific table. Use `--theme <name>` to set the color theme.
+
+URLs with page suffixes are supported — `/p/3` opens that page directly:
+
+```bash
+grist-console https://templates.getgrist.com/hQHXqAQXceeQ/Personal-Notebook/p/32
+```
 
 ## What it looks like
 
@@ -28,18 +34,18 @@ Opening the [Rental Management](https://templates.getgrist.com/5iMYwmESm33J/Rent
 ```
  Grist Console — Select a Page
 
-   > 👨‍👩‍👧 Current Signers
-    🏢 Apartments
-    📃 Leases
+   > Current Signers
+    Apartments
+    Leases
       Tenancies
       People
-    💲 Profit and Loss Overview
+    Profit and Loss Overview
       Income and Expenses
-    💸 Profit and Loss by Apartment
-    🔨 Income and Expense breakdown
+    Profit and Loss by Apartment
+    Income and Expense breakdown
     GristDocTour
 
- ↑↓:select  Enter:open  t:tables  q:quit
+ ↑↓:select  Enter:open  t:tables  T:theme  q:quit
 ```
 
 Select a page to get the same multi-pane layout you'd see in the browser — grid on top, card detail below, with section linking:
@@ -48,12 +54,9 @@ Select a page to get the same multi-pane layout you'd see in the browser — gri
  Apartments (6)
    # │ Apartment │ Lease Start │ Lease End  │ Lease Term │ Num Tenants
  ────┼───────────┼─────────────┼────────────┼────────────┼────────────
-   1 │ 1A        │ 2016-01-01  │ 1514678400 │ 2          │           2
-   2 │ 1B        │ 2016-12-01  │ 1543536000 │ 2          │           2
-   3 │ 1C        │ 2016-02-01  │ 1485820800 │ 1          │           4
-   4 │ 2A        │ 2016-02-01  │ 1517356800 │ 2          │           2
-   5 │ 2B        │ 2016-12-01  │ 1512000000 │ 1          │           4
-   6 │ 2C        │ 2015-03-01  │ 1488240000 │ 2          │           5
+   1 │ 1A        │ 01/01/2016  │ 12/31/2017 │ 2          │           2
+   2 │ 1B        │ 12/01/2016  │ 11/30/2018 │ 2          │           2
+   3 │ 1C        │ 02/01/2016  │ 01/31/2017 │ 1          │           4
  ──────────────────────────────────────────────────────────────────────
  Apartments (1/6)
  Apartment     │ 1A
@@ -61,7 +64,7 @@ Select a page to get the same multi-pane layout you'd see in the browser — gri
  Area          │ 700
  Bathrooms     │ 1
  Additional    │ Facing back, access to backyard
- ↑↓←→:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  q:quit
+ ↑↓←→:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  T:theme  q:quit
 ```
 
 Title bars and cursor are highlighted in your terminal (reverse video).
@@ -75,10 +78,26 @@ Title bars and cursor are highlighted in your terminal (reverse video).
 - **Editing.** Enter to edit, Enter to save. Text, numbers, dates, booleans, references.
 - **Add/delete rows.** `a` to add, `d` to delete.
 - **Live updates.** Changes from other users appear in real time.
+- **Formatting.** Dates, numbers, and currencies display using the document's format settings (date format strings, currency mode, decimal places, etc.).
+- **Reference display.** Ref and RefList columns show the display value (e.g. a name) instead of raw row IDs.
 
-## What doesn't
+## Themes
 
-Formulas (view-only), charts, formatting, column operations, sorting, filtering, access rules, undo. Grist is a big application. This renders tables and lets you poke at cells.
+Press `T` to cycle through themes, or use `--theme <name>`:
+
+| Theme | Description |
+|-------|-------------|
+| `default` | Standard terminal look — bold headers, Unicode box-drawing |
+| `visicalc` | Green phosphor with inverse-video "inverted L" frame |
+| `lotus` | White on blue, Lotus 1-2-3 style |
+| `amber` | Amber phosphor VT220/VAX terminal |
+| `paper` | Dark text on white background, like a printed spreadsheet |
+| `rainbow` | Every element a different color. Festive. |
+| `boring` | No styling at all. Underline cursor. |
+
+## What doesn't work
+
+Formulas (view-only), charts, column operations, sorting, filtering, access rules, undo. Grist is a big application. This renders tables and lets you poke at cells.
 
 ## Keyboard shortcuts
 
@@ -90,6 +109,7 @@ Formulas (view-only), charts, formatting, column operations, sorting, filtering,
 | Up/Down | Select page |
 | Enter | Open page |
 | t | Switch to table picker |
+| T | Cycle theme |
 | q | Quit |
 
 </details>
@@ -109,6 +129,7 @@ Formulas (view-only), charts, formatting, column operations, sorting, filtering,
 | r | Refresh |
 | p | Back to page picker |
 | t | Switch to table picker |
+| T | Cycle theme |
 | q | Quit |
 
 </details>

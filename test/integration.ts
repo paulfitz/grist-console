@@ -14,7 +14,7 @@ import {
 import { DocAction } from "../src/types";
 import {
   SERVER_URL, API_KEY,
-  createTestDoc, applyUserActions, addRows, updateRows,
+  createTestDoc, createPrivateTestDoc, applyUserActions, addRows, updateRows,
 } from "./testServer";
 
 describe("ConsoleConnection (integration)", function() {
@@ -196,6 +196,50 @@ describe("ConsoleConnection (integration)", function() {
     } finally {
       await updateRows(docId, "People", { id: [3], Name: ["Charlie"] });
       await conn1.close();
+      await conn2.close();
+    }
+  });
+
+  it("connects to a public doc without an API key", async function() {
+    const conn = new ConsoleConnection(SERVER_URL, docId);
+    try {
+      await conn.connect();
+      const tableIds = conn.getTableIds();
+      assert.include(tableIds, "People");
+      const data = await conn.fetchTable("People");
+      assert.deepEqual(data.colValues.Name, ["Alice", "Bob", "Charlie"]);
+    } finally {
+      await conn.close();
+    }
+  });
+
+  it("connects to a private doc with an API key", async function() {
+    const { docId: privateDocId } = await createPrivateTestDoc("private-test");
+    await applyUserActions(privateDocId, [
+      ["AddTable", "Secrets", [
+        { id: "Code", type: "Text", isFormula: false, formula: "" },
+      ]],
+    ]);
+    await addRows(privateDocId, "Secrets", { Code: ["alpha", "bravo"] });
+
+    // Should work with API key
+    const conn = new ConsoleConnection(SERVER_URL, privateDocId, API_KEY);
+    try {
+      await conn.connect();
+      const data = await conn.fetchTable("Secrets");
+      assert.deepEqual(data.colValues.Code, ["alpha", "bravo"]);
+    } finally {
+      await conn.close();
+    }
+
+    // Should fail without API key
+    const conn2 = new ConsoleConnection(SERVER_URL, privateDocId);
+    try {
+      await conn2.connect();
+      assert.fail("Should have thrown for private doc without API key");
+    } catch (err: any) {
+      assert.match(err.message, /403|access|denied|rejected/i);
+    } finally {
       await conn2.close();
     }
   });

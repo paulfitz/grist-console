@@ -27,12 +27,18 @@ export class ConsoleConnection {
   private _serverUrl: string;
   private _docId: string;
   private _apiKey: string | undefined;
+  private _verbose: boolean;
   private _metaTables: any = null;
 
-  constructor(serverUrl: string, docId: string, apiKey?: string) {
+  constructor(serverUrl: string, docId: string, apiKey?: string, options?: { verbose?: boolean }) {
     this._serverUrl = serverUrl.replace(/\/$/, "");
     this._docId = docId;
     this._apiKey = apiKey;
+    this._verbose = options?.verbose ?? false;
+  }
+
+  private _log(msg: string) {
+    if (this._verbose) { console.error(`[grist-console] ${msg}`); }
   }
 
   public onDocAction(cb: DocActionCallback) {
@@ -42,27 +48,38 @@ export class ConsoleConnection {
   /**
    * Connect to the Grist server via WebSocket.
    * 1. Resolve the doc's org via the API
-   * 2. Get a session cookie (needed for subsequent API calls and WebSocket)
+   * 2. Get a session cookie (only needed when no API key is provided)
    * 3. Resolve the doc worker URL (for multi-server deployments)
-   * 4. Open WebSocket with cookie and API key Authorization header
+   * 4. Open WebSocket with auth (API key header, or cookie for public docs)
    * 5. Wait for clientConnect
    * 6. Send openDoc
    */
   public async connect(): Promise<void> {
-    // Step 1: Get an initial session cookie (needed for API calls on hosted Grist)
-    const initialCookie = await this._getSessionCookie("");
+    this._log(`server: ${this._serverUrl}`);
+    this._log(`docId: ${this._docId}`);
+    this._log(`auth: ${this._apiKey ? "api key" : "none (will use session cookie)"}`);
 
-    // Step 2: Resolve the doc's org (using cookie for auth context)
+    // Step 1: Get an initial session cookie (only needed without an API key,
+    // e.g. for publicly accessible docs)
+    const initialCookie = this._apiKey ? "" : await this._getSessionCookie("");
+    if (!this._apiKey) {
+      this._log(`session cookie: ${initialCookie ? "obtained" : "none"}`);
+    }
+
+    // Step 2: Resolve the doc's org (API key or cookie provides auth context)
     const org = await this._getDocOrg(initialCookie);
     const orgPrefix = org ? `/o/${org}` : "";
+    this._log(`org: ${org || "(none)"}, docId resolved to: ${this._docId}`);
 
-    // Step 3: Get session cookie with org context (may differ from initial)
-    const cookie = orgPrefix ? await this._getSessionCookie(orgPrefix) || initialCookie : initialCookie;
+    // Step 3: Get session cookie with org context (skip when using API key)
+    const cookie = this._apiKey ? "" :
+      (orgPrefix ? await this._getSessionCookie(orgPrefix) || initialCookie : initialCookie);
 
     // Step 4: Resolve the doc worker URL (may differ from home server)
     const workerUrl = await this._getDocWorkerUrl(orgPrefix, cookie);
+    this._log(`doc worker: ${workerUrl}`);
 
-    // Step 5: Open WebSocket with cookie + API key header for auth
+    // Step 5: Open WebSocket -- API key in Authorization header, or cookie for public docs
     const wsUrl = workerUrl.replace(/^http/, "ws");
     const fullUrl = `${wsUrl}?clientId=console-${Date.now()}&counter=0&newClient=1&browserSettings=${
       encodeURIComponent(JSON.stringify({}))}`;
@@ -70,6 +87,8 @@ export class ConsoleConnection {
     const wsHeaders: Record<string, string> = {};
     if (cookie) { wsHeaders.Cookie = cookie; }
     if (this._apiKey) { wsHeaders.Authorization = `Bearer ${this._apiKey}`; }
+    this._log(`websocket: ${wsUrl}`);
+    this._log(`headers: ${Object.keys(wsHeaders).join(", ") || "(none)"}`);
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -85,12 +104,14 @@ export class ConsoleConnection {
         this._ws!.onerror = () => {
           // After connect, just log errors
         };
+        this._log("websocket: connected");
         if (!settled) { settled = true; resolve(); }
       };
 
       this._ws.on("error", (err: Error) => {
         if (!settled) {
           settled = true;
+          this._log(`websocket error: ${err.message}`);
           reject(new Error(`WebSocket connection failed: ${err.message}`));
         }
       });
@@ -99,6 +120,7 @@ export class ConsoleConnection {
       (this._ws as any).on?.("unexpected-response", (_req: any, res: any) => {
         if (!settled) {
           settled = true;
+          this._log(`websocket rejected: HTTP ${res.statusCode}`);
           const hint = (res.statusCode === 403 && !this._apiKey)
             ? "\nTry providing --api-key or setting GRIST_API_KEY." : "";
           reject(new Error(
@@ -110,14 +132,17 @@ export class ConsoleConnection {
 
     // Step 6: Wait for clientConnect
     await this._waitForClientConnect();
+    this._log("clientConnect received");
 
     // Step 7: Send openDoc
     const result = await this._send("openDoc", this._docId);
     if (result.error) {
+      this._log(`openDoc failed: ${result.error}`);
       throw new Error(`Failed to open doc: ${result.error}`);
     }
     this._docFD = result.data?.docFD ?? 0;
     this._metaTables = result.data?.doc;
+    this._log("openDoc succeeded");
   }
 
   /**
@@ -273,7 +298,7 @@ export class ConsoleConnection {
     );
     if (resp.ok) {
       const doc = await resp.json() as any;
-      // Resolve urlId → full docId
+      // Resolve urlId -> full docId
       if (doc.id && doc.id !== this._docId) {
         this._docId = doc.id;
       }
@@ -294,11 +319,16 @@ export class ConsoleConnection {
    * present in the worker URL).
    */
   private async _getDocWorkerUrl(orgPrefix: string, cookie: string): Promise<string> {
+    // Call /api/worker/ without org prefix -- the endpoint doesn't need
+    // org context, and using one that doesn't match the domain causes a 400.
+    const workerApiUrl = `${this._serverUrl}/api/worker/${this._docId}`;
     try {
-      const resp = await fetch(
-        `${this._serverUrl}${orgPrefix}/api/worker/${this._docId}`,
-        { headers: this._authHeaders(cookie) }
-      );
+      this._log(`worker request: ${workerApiUrl}`);
+      const resp = await fetch(workerApiUrl, { headers: this._authHeaders(cookie) });
+      if (!resp.ok) {
+        const body = await resp.text();
+        this._log(`worker response: ${resp.status} ${body}`);
+      }
       if (resp.ok) {
         const info = await resp.json() as any;
         if (info.docWorkerUrl) {
@@ -315,11 +345,13 @@ export class ConsoleConnection {
           url.pathname = info.selfPrefix + orgPrefix + url.pathname;
           return url.href.replace(/\/$/, "");
         }
+        this._log(`worker response had no docWorkerUrl or selfPrefix`);
       }
-    } catch {
-      // Fall through to default
+    } catch (e: any) {
+      this._log(`worker request failed: ${e.message}`);
     }
     // Fallback: connect directly to the home server with org prefix
+    this._log(`falling back to home server for websocket`);
     return `${this._serverUrl}${orgPrefix}`;
   }
 

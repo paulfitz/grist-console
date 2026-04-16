@@ -62,8 +62,9 @@ program
   .option("--api-key <key>", "API key (or set GRIST_API_KEY env var)")
   .option("--table <table>", "open this table directly (skip table picker)")
   .option(`--theme <name>`, `color theme (${getThemeNames().join(", ")})`, "default")
+  .option("--verbose", "log connection handshake details to stderr")
   .action(async (urlOrServer: string, docIdArg: string | undefined,
-                 options: { apiKey?: string, table?: string, theme?: string }) => {
+                 options: { apiKey?: string, table?: string, theme?: string, verbose?: boolean }) => {
     const apiKey = options.apiKey || process.env.GRIST_API_KEY;
     let theme;
     try {
@@ -88,7 +89,7 @@ program
       docId = parsed.docId;
       pageId = parsed.pageId;
     }
-    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme, pageId });
+    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme, pageId, verbose: options.verbose });
   });
 
 // Only run CLI when executed directly (not when imported for testing)

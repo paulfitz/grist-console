@@ -34,6 +34,7 @@ export function startGrist(): void {
     `docker run -d --name ${CONTAINER_NAME} ` +
     `-p ${GRIST_PORT}:8484 ` +
     `-e GRIST_TEST_LOGIN=1 ` +
+    `-e GRIST_IN_SERVICE=1 ` +
     `-e TEST_SUPPORT_API_KEY=${API_KEY} ` +
     `${GRIST_IMAGE}`,
     { stdio: "inherit" }
@@ -134,6 +135,38 @@ export async function createTestDoc(name: string): Promise<{ workspaceId: number
       delta: { users: { "everyone@getgrist.com": "editors" } },
     }),
   });
+
+  return { workspaceId, docId };
+}
+
+/**
+ * Like createTestDoc but does NOT grant public access -- the doc is only
+ * accessible with the support API key.
+ */
+export async function createPrivateTestDoc(name: string): Promise<{ workspaceId: number; docId: string }> {
+  const fetch = (await import("node-fetch")).default;
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  };
+
+  const orgsResp = await fetch(`${SERVER_URL}/api/orgs`, { headers });
+  const orgs = await orgsResp.json() as any[];
+  const orgId = orgs[0].id;
+
+  const wsResp = await fetch(`${SERVER_URL}/api/orgs/${orgId}/workspaces`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: `console-test-private-${Date.now()}` }),
+  });
+  const workspaceId = await wsResp.json() as number;
+
+  const docResp = await fetch(`${SERVER_URL}/api/workspaces/${workspaceId}/docs`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name }),
+  });
+  const docId = await docResp.json() as string;
 
   return { workspaceId, docId };
 }
