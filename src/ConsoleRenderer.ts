@@ -66,6 +66,7 @@ export interface AppState {
   // Cell viewer
   cellViewerContent: string;
   cellViewerScroll: number;
+  cellViewerLinkIndex: number;  // -1 = no link selected, 0+ = selected link
   // Theme
   theme: Theme;
 }
@@ -99,6 +100,7 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     overlayPaneIndex: null,
     cellViewerContent: "",
     cellViewerScroll: 0,
+    cellViewerLinkIndex: -1,
     // Theme
     theme: theme || defaultTheme,
   };
@@ -169,7 +171,7 @@ export function displayWidth(s: string): number {
 /**
  * Replace newlines and other control characters with spaces for single-line display.
  */
-function flattenToLine(s: string): string {
+export function flattenToLine(s: string): string {
   return s.replace(/[\n\r\t]/g, " ");
 }
 
@@ -222,7 +224,7 @@ const ANSI_RESET = "\x1b[0m";
 /**
  * Apply choice color styling to a cell value string if the column has choiceOptions.
  */
-function applyChoiceColor(formatted: string, value: CellValue, colType: string, widgetOpts?: Record<string, any>): string {
+export function applyChoiceColor(formatted: string, value: CellValue, colType: string, widgetOpts?: Record<string, any>): string {
   if (!widgetOpts?.choiceOptions) { return formatted; }
   const baseType = colType.split(":")[0];
   const opts = widgetOpts.choiceOptions as Record<string, { fillColor?: string; textColor?: string }>;
@@ -304,6 +306,40 @@ function getStatusLine(state: AppState, termCols: number): string {
   return "";
 }
 
+/**
+ * Return a visible window of the edit text that keeps the cursor in view,
+ * plus the cursor's column offset within that window.
+ */
+export function editWindow(editValue: string, cursorPos: number, width: number): { text: string; cursorOffset: number } {
+  const chars = [...editValue];
+  // Find the display width up to the cursor
+  const beforeCursor = chars.slice(0, cursorPos).join("");
+  const cursorDisplayPos = displayWidth(beforeCursor);
+
+  if (cursorDisplayPos < width) {
+    // Cursor fits -- show from the start, truncate at width
+    return { text: padRight(truncate(editValue, width), width), cursorOffset: cursorDisplayPos };
+  }
+
+  // Cursor is past visible area -- scroll so cursor is near the right edge
+  const margin = Math.max(1, Math.floor(width / 4));
+  const targetStart = cursorDisplayPos - width + margin;
+
+  // Find the character index where display width >= targetStart
+  let w = 0;
+  let startCharIdx = 0;
+  for (const ch of chars) {
+    if (w >= targetStart) { break; }
+    w += displayWidth(ch);
+    startCharIdx++;
+  }
+
+  const visible = chars.slice(startCharIdx).join("");
+  const truncated = truncate(visible, width);
+  const offsetInWindow = cursorDisplayPos - displayWidth(chars.slice(0, startCharIdx).join(""));
+  return { text: padRight(truncated, width), cursorOffset: Math.min(offsetInWindow, width - 1) };
+}
+
 function isNumericType(colType: string): boolean {
   return colType === "Int" || colType === "Numeric" ||
     colType.startsWith("Ref:") || colType === "ManualPos";
@@ -316,7 +352,7 @@ export function render(state: AppState): string {
   const termRows = process.stdout.rows || 24;
   const termCols = process.stdout.columns || 80;
 
-  if (state.mode === "cell_viewer") {
+  if (state.mode === "cell_viewer" || (state.mode === "editing" && state.cellViewerContent)) {
     return renderCellViewer(state, termRows, termCols);
   }
   if (state.mode === "table_picker") {
@@ -333,7 +369,8 @@ export function render(state: AppState): string {
 
 function renderCellViewer(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
-  const content = state.cellViewerContent;
+  const isEditing = state.mode === "editing";
+  const content = isEditing ? state.editValue : state.cellViewerContent;
 
   // Word-wrap content to terminal width (with 2-char margin)
   const wrapWidth = termCols - 2;
@@ -360,7 +397,8 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
   }
 
   const lines: string[] = [];
-  lines.push(t.titleBar(padRight(" Cell Content ", termCols)));
+  const titleText = isEditing ? " Editing Cell " : " Cell Content ";
+  lines.push(t.titleBar(padRight(titleText, termCols)));
 
   const dataRows = termRows - 3; // title + footer + status
   for (let r = 0; r < dataRows; r++) {
@@ -379,10 +417,47 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
   const scrollInfo = wrappedLines.length > dataRows
     ? `  (${state.cellViewerScroll + 1}-${Math.min(state.cellViewerScroll + dataRows, wrappedLines.length)}/${wrappedLines.length})`
     : "";
-  lines.push(t.helpBar(`\u2191\u2193:scroll  Esc/v:close${scrollInfo}`));
-  lines.push("");
+  if (isEditing) {
+    lines.push(t.helpBar(`Type to edit  Enter:save  Esc:cancel${scrollInfo}`));
+    lines.push("");
+  } else {
+    const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+    const urlHint = urls.length > 0 ? "  o:link" : "";
+    const enterHint = state.cellViewerLinkIndex >= 0 ? "Enter:open" : "Enter:edit";
+    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc/v:close${scrollInfo}`));
+    if (state.cellViewerLinkIndex >= 0 && state.cellViewerLinkIndex < urls.length) {
+      lines.push(`link ${state.cellViewerLinkIndex + 1}/${urls.length}: ${urls[state.cellViewerLinkIndex]}`);
+    } else {
+      lines.push("");
+    }
+  }
 
-  return screenPreamble(t) + lines.join("\n");
+  let result = screenPreamble(t) + lines.join("\n");
+
+  // Show terminal cursor when editing in cell viewer
+  if (isEditing) {
+    // Find cursor position within the wrapped content
+    let charsLeft = state.editCursorPos;
+    let cursorLine = 0;
+    let cursorCol = 0;
+    for (let i = 0; i < wrappedLines.length; i++) {
+      const lineLen = [...wrappedLines[i]].length;
+      if (charsLeft <= lineLen) {
+        cursorLine = i;
+        cursorCol = displayWidth(wrappedLines[i].slice(0, charsLeft));
+        break;
+      }
+      charsLeft -= lineLen;
+      // Account for the newline between original lines
+      if (charsLeft > 0) { charsLeft--; }
+    }
+    const screenRow = 1 + (cursorLine - state.cellViewerScroll); // 1 for title bar
+    if (screenRow >= 1 && screenRow < termRows - 2) {
+      result += SHOW_CURSOR + MOVE_TO(screenRow, 1 + cursorCol); // 1 for left margin
+    }
+  }
+
+  return result;
 }
 
 function renderTablePicker(state: AppState, termRows: number, termCols: number): string {
@@ -484,7 +559,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       const isCurrentCell = (rowIdx === state.cursorRow && ci === state.cursorCol);
 
       if (state.mode === "editing" && isCurrentCell) {
-        const editDisplay = padRight(truncate(state.editValue, col.width), col.width);
+        const { text: editDisplay } = editWindow(state.editValue, state.editCursorPos, col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
         line += t.colSeparator + t.cursor(padFn(plainText, col.width));
@@ -513,7 +588,24 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   // Status
   lines.push(getStatusLine(state, termCols));
 
-  return screenPreamble(t) + lines.join("\n");
+  let result = screenPreamble(t) + lines.join("\n");
+
+  // Show terminal cursor at edit position when editing
+  if (state.mode === "editing" && !state.cellViewerContent) {
+    const headerRows = t.headerSepLine ? 3 : 2;
+    const editRow = headerRows + (state.cursorRow - state.scrollRow);
+    let editCol = rowNumWidth + t.colSeparator.length;
+    for (const ci of visibleCols) {
+      if (ci === state.cursorCol) { break; }
+      editCol += layout[ci].width + t.colSeparator.length;
+    }
+    const colWidth = layout[state.cursorCol]?.width || 0;
+    const { cursorOffset } = editWindow(state.editValue, state.editCursorPos, colWidth);
+    editCol += cursorOffset;
+    result += SHOW_CURSOR + MOVE_TO(editRow, editCol);
+  }
+
+  return result;
 }
 
 function renderPagePicker(state: AppState, termRows: number, termCols: number): string {
@@ -576,7 +668,7 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
     const pane = state.panes[leaf.paneIndex];
     if (!pane) { continue; }
     const isFocused = leaf.paneIndex === state.focusedPane;
-    renderPaneInto(buf, leaf, pane, isFocused, state.mode, state.editValue, t);
+    renderPaneInto(buf, leaf, pane, isFocused, state.mode, state.editValue, state.editCursorPos, t);
   }
 
   // Flatten buffer to string with ANSI positioning
@@ -607,6 +699,28 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
       t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  p:pages${collapsedHint}  T:theme  q:quit`);
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
+
+  // Show terminal cursor at edit position when editing in a grid pane
+  if (state.mode === "editing" && !state.cellViewerContent) {
+    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+    const pane = state.panes[paneIdx];
+    const leaf = leaves.find(l => l.paneIndex === paneIdx);
+    if (pane && leaf && !isCardPane(pane)) {
+      const paneLayout = computePaneColLayout(pane, leaf.width);
+      const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
+      const rowNumWidth = Math.max(3, String(maxRowId).length);
+      const headerRows = t.headerSepLine ? 3 : 2;
+      const editRow = leaf.top + headerRows + (pane.cursorRow - pane.scrollRow) + trayHeight;
+      let editCol = leaf.left + rowNumWidth + t.colSeparator.length;
+      for (let ci = pane.scrollCol; ci < pane.cursorCol && ci < paneLayout.length; ci++) {
+        editCol += paneLayout[ci].width + t.colSeparator.length;
+      }
+      const colWidth = paneLayout[pane.cursorCol]?.width || 0;
+      const { cursorOffset } = editWindow(state.editValue, state.editCursorPos, colWidth);
+      editCol += cursorOffset;
+      output += SHOW_CURSOR + MOVE_TO(editRow, editCol);
+    }
+  }
 
   return output;
 }
@@ -640,7 +754,7 @@ function renderOverlay(
     top: 0, left: 0, width: termCols, height: bufHeight,
     paneIndex: state.overlayPaneIndex!,
   };
-  renderPaneInto(buf, overlayLeaf, pane, true, state.mode, state.editValue, t);
+  renderPaneInto(buf, overlayLeaf, pane, true, state.mode, state.editValue, state.editCursorPos, t);
 
   let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
   if (trayHeight > 0) {
@@ -660,19 +774,36 @@ function renderOverlay(
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
 
+  // Show terminal cursor when editing in overlay
+  if (state.mode === "editing" && !state.cellViewerContent && !isCardPane(pane)) {
+    const paneLayout = computePaneColLayout(pane, termCols);
+    const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
+    const rowNumWidth = Math.max(3, String(maxRowId).length);
+    const headerRows = t.headerSepLine ? 3 : 2;
+    const editRow = headerRows + (pane.cursorRow - pane.scrollRow) + trayHeight;
+    let editCol = rowNumWidth + t.colSeparator.length;
+    for (let ci = pane.scrollCol; ci < pane.cursorCol && ci < paneLayout.length; ci++) {
+      editCol += paneLayout[ci].width + t.colSeparator.length;
+    }
+    const colWidth = paneLayout[pane.cursorCol]?.width || 0;
+    const { cursorOffset } = editWindow(state.editValue, state.editCursorPos, colWidth);
+    editCol += cursorOffset;
+    output += SHOW_CURSOR + MOVE_TO(editRow, editCol);
+  }
+
   return output;
 }
 
 function renderPaneInto(
   buf: string[][], leaf: LayoutNode, pane: PaneState,
-  isFocused: boolean, mode: AppMode, editValue: string, t: Theme,
+  isFocused: boolean, mode: AppMode, editValue: string, editCursorPos: number, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
   if (width < 3 || height < 2) { return; }
 
   const pk = pane.sectionInfo.parentKey;
   if (pk === "single" || pk === "detail") {
-    renderCardPaneInto(buf, leaf, pane, isFocused, mode, editValue, t);
+    renderCardPaneInto(buf, leaf, pane, isFocused, mode, editValue, editCursorPos, t);
     return;
   }
   if (pk === "chart") {
@@ -742,7 +873,7 @@ function renderPaneInto(
       const isCurrentCell = isFocused && rowIdx === pane.cursorRow && ci === pane.cursorCol;
 
       if (mode === "editing" && isCurrentCell) {
-        const editDisplay = padRight(truncate(editValue, col.width), col.width);
+        const { text: editDisplay } = editWindow(editValue, editCursorPos, col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {
         line += t.colSeparator + t.cursor(padFn(plainText, col.width));
@@ -763,7 +894,7 @@ function renderPaneInto(
  */
 function renderCardPaneInto(
   buf: string[][], leaf: LayoutNode, pane: PaneState,
-  isFocused: boolean, mode: AppMode, editValue: string, t: Theme,
+  isFocused: boolean, mode: AppMode, editValue: string, editCursorPos: number, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
 
@@ -803,7 +934,7 @@ function renderCardPaneInto(
 
     let line: string;
     if (mode === "editing" && isCurrentField) {
-      const editDisplay = padRight(truncate(editValue, valueWidth), valueWidth);
+      const { text: editDisplay } = editWindow(editValue, editCursorPos, valueWidth);
       line = t.fieldLabel(label) + cardSep + t.cursor(editDisplay);
     } else if (isCurrentField) {
       line = t.fieldLabelActive(label) + cardSep + t.cursor(padRight(formatted, valueWidth));

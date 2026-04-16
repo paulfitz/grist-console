@@ -5,8 +5,8 @@ import {
   getColumnInfo, getColIdByRef, parseLayoutSpec, computeLayout,
   getLayoutSpecForView, Rect,
 } from "../src/ConsoleLayout.js";
-import { createInitialState, render, PaneState, displayWidth } from "../src/ConsoleRenderer.js";
-import { handleKeypress } from "../src/ConsoleInput.js";
+import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
+import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain.js";
 import { parseGristDocUrl } from "../src/index.js";
 import { GristObjCode } from "../src/types.js";
@@ -100,6 +100,25 @@ describe("ConsoleClient", function() {
 
       it("formats List values", function() {
         assert.equal(formatCellValue([GristObjCode.List, "foo", "bar"]), "foo, bar");
+      });
+
+      it("formats RefList as List with display values", function() {
+        const dv = new Map([[1, "Mon"], [2, "Tue"], [3, "Wed"]]);
+        // RefList data comes as ["L", id1, id2, ...] in table data
+        assert.equal(
+          formatCellValue([GristObjCode.List, 1, 3] as any, "RefList:Dates", undefined, dv),
+          "Mon, Wed"
+        );
+        // Falls back to IDs when display value is missing
+        assert.equal(
+          formatCellValue([GristObjCode.List, 1, 99] as any, "RefList:Dates", undefined, dv),
+          "Mon, 99"
+        );
+        // Without colType, shows raw values
+        assert.equal(
+          formatCellValue([GristObjCode.List, 1, 2] as any, undefined, undefined, dv),
+          "1, 2"
+        );
       });
 
       it("formats error values", function() {
@@ -1246,6 +1265,238 @@ describe("ConsoleClient", function() {
       handleKeypress(Buffer.from("1"), state);
       assert.equal(state.focusedPane, 0, "focusedPane should remain on visible pane");
       assert.equal(state.overlayPaneIndex, 1);
+    });
+  });
+
+  describe("flattenToLine", function() {
+    it("replaces newlines with spaces", function() {
+      assert.equal(flattenToLine("hello\nworld"), "hello world");
+    });
+
+    it("replaces tabs and carriage returns", function() {
+      assert.equal(flattenToLine("a\tb\rc"), "a b c");
+    });
+
+    it("leaves normal text unchanged", function() {
+      assert.equal(flattenToLine("hello world"), "hello world");
+    });
+
+    it("handles multiple consecutive newlines", function() {
+      assert.equal(flattenToLine("a\n\n\nb"), "a   b");
+    });
+  });
+
+  describe("editWindow", function() {
+    it("shows text from start when cursor fits", function() {
+      const { text, cursorOffset } = editWindow("hello", 3, 10);
+      assert.equal(cursorOffset, 3);
+      assert.include(text, "hello");
+    });
+
+    it("scrolls text when cursor is past visible area", function() {
+      const { text, cursorOffset } = editWindow("abcdefghijklmnop", 14, 8);
+      // Cursor at position 14, width 8 -- should scroll right
+      assert.isAtMost(cursorOffset, 7); // cursor within window
+      assert.include(text, "n"); // char at position 13 should be visible
+    });
+
+    it("handles cursor at position 0", function() {
+      const { text, cursorOffset } = editWindow("hello", 0, 10);
+      assert.equal(cursorOffset, 0);
+      assert.include(text, "hello");
+    });
+
+    it("handles empty string", function() {
+      const { text, cursorOffset } = editWindow("", 0, 10);
+      assert.equal(cursorOffset, 0);
+      assert.equal(text.trim(), "");
+    });
+
+    it("handles cursor at end of short string", function() {
+      const { text, cursorOffset } = editWindow("hi", 2, 10);
+      assert.equal(cursorOffset, 2);
+    });
+  });
+
+  describe("applyChoiceColor", function() {
+    it("applies fill and text color for Choice column", function() {
+      const opts = {
+        choiceOptions: {
+          "Red": { fillColor: "#FF0000", textColor: "#FFFFFF" },
+        },
+      };
+      const result = applyChoiceColor("Red", "Red", "Choice", opts);
+      assert.include(result, "\x1b[48;2;255;0;0m"); // fill
+      assert.include(result, "\x1b[38;2;255;255;255m"); // text
+      assert.include(result, "Red");
+      assert.include(result, "\x1b[0m"); // reset
+    });
+
+    it("returns plain text when no choiceOptions", function() {
+      assert.equal(applyChoiceColor("hello", "hello", "Choice"), "hello");
+    });
+
+    it("returns plain text for non-choice column", function() {
+      const opts = { choiceOptions: { "x": { fillColor: "#FF0000" } } };
+      assert.equal(applyChoiceColor("hello", "hello", "Text", opts), "hello");
+    });
+
+    it("returns plain text when value has no color config", function() {
+      const opts = { choiceOptions: { "Red": { fillColor: "#FF0000" } } };
+      assert.equal(applyChoiceColor("Blue", "Blue", "Choice", opts), "Blue");
+    });
+
+    it("colors individual items in ChoiceList", function() {
+      const opts = {
+        choiceOptions: {
+          "A": { fillColor: "#AA0000", textColor: "#FFFFFF" },
+          "B": { fillColor: "#00BB00" },
+        },
+      };
+      const result = applyChoiceColor("A, B", ["L", "A", "B"] as any, "ChoiceList", opts);
+      assert.include(result, "\x1b[48;2;170;0;0m"); // A's fill
+      assert.include(result, "\x1b[48;2;0;187;0m"); // B's fill
+    });
+  });
+
+  describe("ensureColVisible", function() {
+    function makePaneForScroll(colCount: number) {
+      const columns = [];
+      const colValues: Record<string, any[]> = {};
+      for (let i = 0; i < colCount; i++) {
+        const colId = `Col${i}`;
+        columns.push({ colId, type: "Text", label: colId });
+        colValues[colId] = ["short"]; // each col ~5 chars wide
+      }
+      return {
+        scrollCol: 0,
+        cursorCol: 0,
+        columns,
+        colValues,
+        rowIds: [1],
+      };
+    }
+
+    it("does nothing when cursor is visible", function() {
+      const pane = makePaneForScroll(5);
+      pane.cursorCol = 2;
+      ensureColVisible(pane, 200); // plenty of room
+      assert.equal(pane.scrollCol, 0);
+    });
+
+    it("scrolls right when cursor is past visible area", function() {
+      const pane = makePaneForScroll(20);
+      pane.cursorCol = 15;
+      ensureColVisible(pane, 40); // narrow -- only a few cols fit
+      assert.isAbove(pane.scrollCol, 0);
+      assert.isAtMost(pane.scrollCol, 15);
+    });
+
+    it("scrolls left when cursor is before scrollCol", function() {
+      const pane = makePaneForScroll(10);
+      pane.scrollCol = 5;
+      pane.cursorCol = 2;
+      ensureColVisible(pane, 200);
+      assert.equal(pane.scrollCol, 2);
+    });
+  });
+
+  describe("cell viewer key handling", function() {
+    function makeCellViewerState(content: string) {
+      const state = createInitialState("testDoc");
+      state.mode = "cell_viewer";
+      state.cellViewerContent = content;
+      state.cellViewerScroll = 0;
+      state.cellViewerLinkIndex = -1;
+      return state;
+    }
+
+    it("o cycles through links", function() {
+      const state = makeCellViewerState("See https://example.com and https://other.com");
+      handleKeypress(Buffer.from("o"), state);
+      assert.equal(state.cellViewerLinkIndex, 0);
+      handleKeypress(Buffer.from("o"), state);
+      assert.equal(state.cellViewerLinkIndex, 1);
+      handleKeypress(Buffer.from("o"), state);
+      assert.equal(state.cellViewerLinkIndex, 0); // wraps
+    });
+
+    it("o does nothing when no links", function() {
+      const state = makeCellViewerState("no links here");
+      const action = handleKeypress(Buffer.from("o"), state);
+      assert.equal(action.type, "none");
+      assert.equal(state.cellViewerLinkIndex, -1);
+    });
+
+    it("Enter opens selected link", function() {
+      const state = makeCellViewerState("Visit https://example.com now");
+      handleKeypress(Buffer.from("o"), state); // select first link
+      const action = handleKeypress(Buffer.from("\r"), state);
+      assert.equal(action.type, "open_url");
+      if (action.type === "open_url") {
+        assert.equal(action.url, "https://example.com");
+      }
+    });
+
+    it("Enter edits when no link selected", function() {
+      const state = makeCellViewerState("just text");
+      // Need pane data for edit mode
+      state.panes = [{
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1],
+        allRowIds: [1],
+        colValues: { Name: ["just text"] },
+        allColValues: { Name: ["just text"] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      }];
+      state.focusedPane = 0;
+      handleKeypress(Buffer.from("\r"), state);
+      assert.equal(state.mode, "editing");
+      // cellViewerContent should be preserved so viewer stays open
+      assert.equal(state.cellViewerContent, "just text");
+    });
+
+    it("Escape closes viewer and resets link index", function() {
+      const state = makeCellViewerState("https://example.com");
+      handleKeypress(Buffer.from("o"), state);
+      assert.equal(state.cellViewerLinkIndex, 0);
+      handleKeypress(Buffer.from("\x1b"), state);
+      assert.equal(state.mode, "grid");
+      assert.equal(state.cellViewerContent, "");
+      assert.equal(state.cellViewerLinkIndex, -1);
+    });
+
+    it("up/down scrolls content", function() {
+      const longContent = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+      const state = makeCellViewerState(longContent);
+      assert.equal(state.cellViewerScroll, 0);
+      handleKeypress(Buffer.from("\x1b[B"), state); // down
+      assert.equal(state.cellViewerScroll, 1);
+      handleKeypress(Buffer.from("\x1b[A"), state); // up
+      assert.equal(state.cellViewerScroll, 0);
+    });
+  });
+
+  describe("JSON config file", function() {
+    it("parseGristDocUrl handles /doc/urlid form", function() {
+      const result = parseGristDocUrl("https://gristlabs.getgrist.com/doc/check-ins");
+      assert.equal(result?.serverUrl, "https://gristlabs.getgrist.com");
+      assert.equal(result?.docId, "check-ins");
+      assert.isUndefined(result?.pageId);
+    });
+
+    it("parseGristDocUrl handles /doc/urlid/p/N form", function() {
+      const result = parseGristDocUrl("https://gristlabs.getgrist.com/doc/check-ins/p/3");
+      assert.deepEqual(result, {
+        serverUrl: "https://gristlabs.getgrist.com",
+        docId: "check-ins",
+        pageId: 3,
+      });
     });
   });
 

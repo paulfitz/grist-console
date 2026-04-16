@@ -213,7 +213,12 @@ export function formatCellValue(value: CellValue, colType?: string, widgetOpts?:
         return rowIds.map(id => displayValues?.get(id) ?? String(id)).join(", ");
       }
       case GristObjCode.List: {
-        return value.slice(1).map(v => String(v)).join(", ");
+        const items = value.slice(1);
+        // If this is a RefList column, use display values for the row IDs
+        if (colType && colType.startsWith("RefList:") && displayValues) {
+          return items.map(id => typeof id === "number" ? (displayValues.get(id) ?? String(id)) : String(id)).join(", ");
+        }
+        return items.map(v => String(v)).join(", ");
       }
       case GristObjCode.Exception: {
         return `#ERROR: ${value[1] || ""}`;

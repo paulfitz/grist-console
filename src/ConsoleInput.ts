@@ -1,4 +1,4 @@
-import { AppState, isCardPane, PaneState, displayWidth } from "./ConsoleRenderer.js";
+import { AppMode, AppState, isCardPane, PaneState, displayWidth } from "./ConsoleRenderer.js";
 import { BulkColValues, ColumnInfo } from "./types.js";
 import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
 import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
@@ -9,7 +9,7 @@ import { ConsoleConnection } from "./ConsoleConnection.js";
  * Computes actual column widths to determine visibility.
  * Works with PaneState or the single-pane fields on AppState.
  */
-function ensureColVisible(pane: { scrollCol: number; cursorCol: number; columns: ColumnInfo[]; colValues: BulkColValues; rowIds: number[] }, availWidth: number): void {
+export function ensureColVisible(pane: { scrollCol: number; cursorCol: number; columns: ColumnInfo[]; colValues: BulkColValues; rowIds: number[] }, availWidth: number): void {
   if (pane.cursorCol < pane.scrollCol) {
     pane.scrollCol = pane.cursorCol;
     return;
@@ -89,7 +89,8 @@ export type InputAction =
   | { type: "focus_prev_pane" }
   | { type: "cycle_theme" }
   | { type: "close_overlay" }
-  | { type: "view_cell" };
+  | { type: "view_cell" }
+  | { type: "open_url"; url: string };
 
 /**
  * Parse a raw keypress buffer into a key name.
@@ -252,10 +253,16 @@ function enterEditMode(state: AppState): void {
 /**
  * Handle a keypress in edit mode.
  */
+function editReturnMode(state: AppState): AppMode {
+  if (state.cellViewerContent) { return "cell_viewer"; }
+  if (state.overlayPaneIndex !== null) { return "overlay"; }
+  return "grid";
+}
+
 function handleEditKey(key: string, state: AppState): InputAction {
   switch (key) {
     case "escape":
-      state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
+      state.mode = editReturnMode(state);
       state.statusMessage = "";
       return { type: "render" };
     case "enter":
@@ -436,6 +443,8 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "v":
       return { type: "view_cell" };
+    case "escape":
+      return { type: "switch_to_pages" };
     case "r":
       return { type: "refresh" };
     case "p":
@@ -540,6 +549,8 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
         state.mode = "confirm_delete";
       }
       return { type: "render" };
+    case "escape":
+      return { type: "switch_to_pages" };
     case "r":
       return { type: "refresh" };
     case "p":
@@ -590,6 +601,7 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
       state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
       state.cellViewerContent = "";
       state.cellViewerScroll = 0;
+      state.cellViewerLinkIndex = -1;
       return { type: "render" };
     case "up":
       if (state.cellViewerScroll > 0) { state.cellViewerScroll--; }
@@ -609,6 +621,34 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
     case "end":
       state.cellViewerScroll = maxScroll;
       return { type: "render" };
+    case "enter": {
+      // If a link is selected, open it; otherwise switch to editing
+      if (state.cellViewerLinkIndex >= 0) {
+        const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+        if (state.cellViewerLinkIndex < urls.length) {
+          return { type: "open_url", url: urls[state.cellViewerLinkIndex] };
+        }
+      }
+      // Enter edit mode -- keep cellViewerContent so we stay in the viewer
+      state.cellViewerLinkIndex = -1;
+      if (state.panes.length > 0) {
+        const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
+        const pane = state.panes[paneIdx];
+        if (pane && pane.rowIds.length > 0 && pane.columns.length > 0) {
+          enterPaneEditMode(state, pane);
+        }
+      } else if (state.rowIds.length > 0 && state.columns.length > 0) {
+        enterEditMode(state);
+      }
+      return { type: "render" };
+    }
+    case "o": {
+      // Cycle through URLs found in cell content
+      const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+      if (urls.length === 0) { return { type: "none" }; }
+      state.cellViewerLinkIndex = (state.cellViewerLinkIndex + 1) % urls.length;
+      return { type: "render" };
+    }
     default:
       return { type: "none" };
   }
@@ -776,8 +816,12 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
   } catch (e: any) {
     state.statusMessage = `Error: ${e.message}`;
   }
-  // Return to overlay if we were editing from there, otherwise grid
-  state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
+  // Return to cell viewer/overlay/grid as appropriate
+  state.mode = editReturnMode(state);
+  // If returning to cell viewer, update the content with the saved value
+  if (state.mode === "cell_viewer") {
+    state.cellViewerContent = state.editValue;
+  }
 }
 
 /**

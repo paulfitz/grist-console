@@ -13,6 +13,7 @@ import {
 import { CellValue } from "./types.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
+import { exec } from "child_process";
 import { calibrateTermWidth } from "./termWidth.js";
 
 /**
@@ -259,6 +260,17 @@ export async function consoleMain(options: {
             state.cellViewerContent = formatCellValue(raw, col.type, col.widgetOptions, col.displayValues);
             state.cellViewerScroll = 0;
             state.mode = "cell_viewer";
+          }
+          doRender(state);
+          break;
+        }
+        case "open_url": {
+          const url = action.url;
+          if (/^https?:\/\//.test(url)) {
+            const cmd = process.platform === "darwin" ? "open" :
+              process.platform === "win32" ? "start" : "xdg-open";
+            exec(`${cmd} ${JSON.stringify(url)}`);
+            state.statusMessage = `Opened ${url}`;
           }
           doRender(state);
           break;
