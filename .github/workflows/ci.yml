@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  GRIST_IMAGE: gristlabs/grist:1.7.11
+  GRIST_IMAGE: gristlabs/grist:latest
 
 jobs:
   test:
