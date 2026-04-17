@@ -16,7 +16,17 @@ interface GristResponse {
   data?: any;
 }
 
-export type DocActionCallback = (actions: DocAction[]) => void;
+export interface ActionGroup {
+  actionNum: number;
+  actionHash: string;
+  fromSelf: boolean;
+  linkId?: number;
+  otherId?: number;
+  rowIdHint?: number;
+  isUndo?: boolean;
+}
+
+export type DocActionCallback = (actions: DocAction[], actionGroup?: ActionGroup) => void;
 
 export class ConsoleConnection {
   private _ws: WS | null = null;
@@ -217,6 +227,23 @@ export class ConsoleConnection {
   }
 
   /**
+   * Apply undo/redo by referencing specific historical actions.
+   * Mirrors the web client's undo stack behavior.
+   */
+  public async applyUserActionsById(
+    actionNums: number[], actionHashes: string[], undo: boolean,
+    options?: { otherId?: number },
+  ): Promise<any> {
+    const result = await this._send(
+      "applyUserActionsById", this._docFD, actionNums, actionHashes, undo, options || {},
+    );
+    if (result.error) {
+      throw new Error(`Failed to ${undo ? "undo" : "redo"}: ${result.error}`);
+    }
+    return result.data;
+  }
+
+  /**
    * Close the document and disconnect immediately.
    */
   public async close(): Promise<void> {
@@ -400,7 +427,7 @@ export class ConsoleConnection {
     }
     if (msg.type === "docUserAction" && msg.data?.docActions) {
       if (this._onDocAction) {
-        this._onDocAction(msg.data.docActions as DocAction[]);
+        this._onDocAction(msg.data.docActions as DocAction[], msg.data.actionGroup);
       }
     }
   }

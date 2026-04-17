@@ -11,7 +11,8 @@ import {
   extractPages, extractSectionsForView, extractFiltersForSection,
   getLayoutSpecForView, parseLayoutSpec, computeLayout, Rect,
 } from "../src/ConsoleLayout.js";
-import { applySortSpec, applySectionFilters } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters, appendRowToColValues } from "../src/ConsoleMain.js";
+import { computeInsertManualSort } from "../src/ConsoleInput.js";
 
 function defaultVal(colType: string): any {
   const base = colType.split(":")[0];
@@ -126,6 +127,201 @@ describe("ConsoleConnection (integration)", function() {
       await conn2.close();
       await conn.close();
     }
+  });
+
+  /**
+   * Helper: run an edit and return the action group metadata, by listening for
+   * the next non-undo fromSelf broadcast after the edit.
+   */
+  async function editAndCaptureAg(
+    conn: ConsoleConnection,
+    actions: any[],
+  ): Promise<{ actionNum: number; actionHash: string }> {
+    const agPromise = new Promise<{ actionNum: number; actionHash: string }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout waiting for actionGroup")), 3000);
+      conn.onDocAction((_actions, ag) => {
+        if (ag && ag.fromSelf && !ag.isUndo) {
+          clearTimeout(timer);
+          resolve({ actionNum: ag.actionNum, actionHash: ag.actionHash });
+        }
+      });
+    });
+    await conn.applyUserActions(actions);
+    return agPromise;
+  }
+
+  async function getName(conn: ConsoleConnection, rowId: number): Promise<any> {
+    const data = await conn.fetchTable("People");
+    const idx = data.rowIds.indexOf(rowId);
+    return data.colValues.Name[idx];
+  }
+
+  it("undoes and redoes via applyUserActionsById", async function() {
+    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
+    try {
+      await conn.connect();
+      const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "UndoMe" }]]);
+
+      assert.equal(await getName(conn, 1), "UndoMe");
+      await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
+      assert.equal(await getName(conn, 1), "Alice");
+      await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
+      assert.equal(await getName(conn, 1), "UndoMe");
+    } finally {
+      await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
+      await conn.close();
+    }
+  });
+
+  it("undoes multiple edits in reverse order", async function() {
+    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
+    try {
+      await conn.connect();
+      const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
+      const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
+      const ag3 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Third" }]]);
+      assert.equal(await getName(conn, 1), "Third");
+
+      // Undo most recent first
+      await conn.applyUserActionsById([ag3.actionNum], [ag3.actionHash], true, { otherId: ag3.actionNum });
+      assert.equal(await getName(conn, 1), "Second");
+      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
+      assert.equal(await getName(conn, 1), "First");
+      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
+      assert.equal(await getName(conn, 1), "Alice");
+    } finally {
+      await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
+      await conn.close();
+    }
+  });
+
+  it("redoes multiple undos in forward order", async function() {
+    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
+    try {
+      await conn.connect();
+      const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
+      const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
+
+      // Undo both
+      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
+      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
+      assert.equal(await getName(conn, 1), "Alice");
+
+      // Redo in original order
+      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], false, { otherId: ag1.actionNum });
+      assert.equal(await getName(conn, 1), "First");
+      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], false, { otherId: ag2.actionNum });
+      assert.equal(await getName(conn, 1), "Second");
+    } finally {
+      await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
+      await conn.close();
+    }
+  });
+
+  it("undo, redo, undo, redo alternation converges", async function() {
+    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
+    try {
+      await conn.connect();
+      const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "ToggleMe" }]]);
+      assert.equal(await getName(conn, 1), "ToggleMe");
+
+      for (let i = 0; i < 3; i++) {
+        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
+        assert.equal(await getName(conn, 1), "Alice", `after undo ${i + 1}`);
+        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
+        assert.equal(await getName(conn, 1), "ToggleMe", `after redo ${i + 1}`);
+      }
+    } finally {
+      await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
+      await conn.close();
+    }
+  });
+
+  it("adding a row at top in a manualSort view stays at top after reload", async function() {
+    // Cursor at row 0 (visible top). `a` passes the cursor row's manualSort
+    // to AddRecord; the server's position algorithm places the new row
+    // just before it. After reload, the new row should be at the top.
+    const { docId: testDocId } = await createTestDoc("add-at-top-test");
+    await applyUserActions(testDocId, [
+      ["AddTable", "Things", [
+        { id: "Label", type: "Text", isFormula: false, formula: "" },
+      ]],
+    ]);
+    await addRows(testDocId, "Things", { Label: ["Alpha", "Bravo", "Charlie"] });
+
+    const conn1 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+    await conn1.connect();
+    const initialData = await conn1.fetchTable("Things");
+
+    // Sort initial data by manualSort so row 0 corresponds to the visible top
+    const indices = initialData.rowIds.map((_, i) => i);
+    indices.sort((a, b) =>
+      (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
+    );
+    const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
+
+    // Compute insert hint = cursor (row 0) manualSort value
+    const insertMS = computeInsertManualSort(sortedManualSort, 0, sortedManualSort.length);
+    assert.equal(insertMS, sortedManualSort[0], "Hint should equal reference row's manualSort");
+
+    await conn1.applyUserActions([
+      ["AddRecord", "Things", null, { Label: "TopInsert", manualSort: insertMS }],
+    ]);
+    await conn1.close();
+
+    // Reload and verify order
+    const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+    await conn2.connect();
+    const reloaded = await conn2.fetchTable("Things");
+    const reloadIdx = reloaded.rowIds.map((_, i) => i);
+    reloadIdx.sort((a, b) =>
+      (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
+    );
+    const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
+    assert.deepEqual(orderedLabels, ["TopInsert", "Alpha", "Bravo", "Charlie"]);
+
+    await conn2.close();
+  });
+
+  it("adding a row in the middle inserts above cursor row", async function() {
+    const { docId: testDocId } = await createTestDoc("add-middle-test");
+    await applyUserActions(testDocId, [
+      ["AddTable", "Things", [
+        { id: "Label", type: "Text", isFormula: false, formula: "" },
+      ]],
+    ]);
+    await addRows(testDocId, "Things", { Label: ["A", "B", "C", "D"] });
+
+    const conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+    await conn.connect();
+    const initialData = await conn.fetchTable("Things");
+
+    const indices = initialData.rowIds.map((_, i) => i);
+    indices.sort((a, b) =>
+      (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
+    );
+    const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
+
+    // Cursor on row 2 (label "C"). Pass C's manualSort as hint.
+    const insertMS = computeInsertManualSort(sortedManualSort, 2, sortedManualSort.length);
+    assert.equal(insertMS, sortedManualSort[2]);
+
+    await conn.applyUserActions([
+      ["AddRecord", "Things", null, { Label: "MidInsert", manualSort: insertMS }],
+    ]);
+    await conn.close();
+
+    const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
+    await conn2.connect();
+    const reloaded = await conn2.fetchTable("Things");
+    const reloadIdx = reloaded.rowIds.map((_, i) => i);
+    reloadIdx.sort((a, b) =>
+      (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
+    );
+    const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
+    // Server inserts just before row 2 ("C"), so: A B MidInsert C D
+    assert.deepEqual(orderedLabels, ["A", "B", "MidInsert", "C", "D"]);
+    await conn2.close();
   });
 
   it("deletes a row", async function() {

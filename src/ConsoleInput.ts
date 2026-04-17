@@ -1,5 +1,5 @@
 import { AppMode, AppState, isCardPane, PaneState, displayWidth } from "./ConsoleRenderer.js";
-import { BulkColValues, ColumnInfo } from "./types.js";
+import { BulkColValues, CellValue, ColumnInfo } from "./types.js";
 import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
 import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
@@ -90,6 +90,8 @@ export type InputAction =
   | { type: "cycle_theme" }
   | { type: "close_overlay" }
   | { type: "view_cell" }
+  | { type: "undo" }
+  | { type: "redo" }
   | { type: "open_url"; url: string };
 
 /**
@@ -246,6 +248,10 @@ function handleGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "v":
       return { type: "view_cell" };
+    case "u":
+      return { type: "undo" };
+    case "U":
+      return { type: "redo" };
     case "escape":
     case "p":
       if (state.pages.length > 0) {
@@ -481,6 +487,10 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "v":
       return { type: "view_cell" };
+    case "u":
+      return { type: "undo" };
+    case "U":
+      return { type: "redo" };
     case "escape":
       return { type: "switch_to_pages" };
     case "r":
@@ -867,20 +877,46 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
  */
 export async function executeAddRow(state: AppState, conn: ConsoleConnection): Promise<void> {
   let tableId: string;
+  let manualSort: number | undefined;
   if (state.panes.length > 0) {
     const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-    tableId = state.panes[paneIdx].sectionInfo.tableId;
+    const pane = state.panes[paneIdx];
+    tableId = pane.sectionInfo.tableId;
+    manualSort = computeInsertManualSort(pane.colValues.manualSort, pane.cursorRow, pane.rowIds.length);
   } else {
     tableId = state.currentTableId;
+    manualSort = computeInsertManualSort(state.colValues.manualSort, state.cursorRow, state.rowIds.length);
   }
   try {
+    const payload: Record<string, any> = {};
+    if (manualSort !== undefined) { payload.manualSort = manualSort; }
     await conn.applyUserActions([
-      ["AddRecord", tableId, null, {}],
+      ["AddRecord", tableId, null, payload],
     ]);
     state.statusMessage = "Row added";
   } catch (e: any) {
     state.statusMessage = `Error: ${e.message}`;
   }
+}
+
+/**
+ * Compute a manualSort value for a new row inserted ABOVE the cursor
+ * position. Matches the web client's behavior: pass the cursor row's
+ * current manualSort value; the server's position-assignment algorithm
+ * places the new row just before it (midpoint with the row above, or
+ * relabels if needed).
+ *
+ * Returns undefined to mean "insert at end" (no position hint) when we
+ * can't determine a manualSort (empty table, no manualSort column, or
+ * non-numeric value).
+ */
+export function computeInsertManualSort(
+  sortCol: CellValue[] | undefined, cursorRow: number, rowCount: number,
+): number | undefined {
+  if (!sortCol || rowCount === 0) { return undefined; }
+  const cursor = sortCol[cursorRow];
+  if (typeof cursor !== "number") { return undefined; }
+  return cursor;
 }
 
 /**

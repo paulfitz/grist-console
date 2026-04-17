@@ -14,7 +14,7 @@ import { CellValue } from "./types.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
 import { exec } from "child_process";
-import { calibrateTermWidth, probeChar, hasProbed } from "./termWidth.js";
+import { calibrateTermWidth, probeChar, hasProbed, getWidthReport, getMode2027Status, disableMode2027 } from "./termWidth.js";
 
 /**
  * Main entry point for the console client.
@@ -30,6 +30,7 @@ export async function consoleMain(options: {
 }): Promise<void> {
   const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey, { verbose: options.verbose });
   const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
+  _verbose = options.verbose ?? false;
 
   // Calibrate terminal character widths and connect in parallel
   process.stdout.write("Connecting...\n");
@@ -82,10 +83,13 @@ export async function consoleMain(options: {
   }
 
   // Set up live update handler (server pushes docUserAction messages over WebSocket)
-  conn.onDocAction((actions) => {
+  conn.onDocAction((actions, actionGroup) => {
     applyDocActions(state, actions);
     if (state.panes.length > 0) {
       applyAllSectionLinks(state, conn);
+    }
+    if (actionGroup && actionGroup.fromSelf) {
+      handleOwnActionGroup(state, actionGroup);
     }
     doRender(state);
     scheduleProbe(state);
@@ -295,6 +299,14 @@ export async function consoleMain(options: {
           doRender(state);
           break;
         }
+        case "undo":
+          await executeUndo(state, conn);
+          doRender(state);
+          break;
+        case "redo":
+          await executeRedo(state, conn);
+          doRender(state);
+          break;
         case "none":
           break;
       }
@@ -311,6 +323,7 @@ export async function consoleMain(options: {
 
 // Probe coordination state (module-level so it's shared across the event loop)
 let _probing = false;
+let _verbose = false;
 const _probingBuffer: Buffer[] = [];
 let _probeTimer: ReturnType<typeof setTimeout> | null = null;
 let _replayToHandler: ((data: Buffer) => Promise<void>) | null = null;
@@ -968,11 +981,141 @@ function defaultForColumnType(colType: string): CellValue {
   }
 }
 
+/**
+ * Append a new row's values to a BulkColValues, covering every column in the
+ * map (including hidden ones like manualSort). If a column has no value in
+ * the action's colValues, fall back to the typed default for visible columns
+ * and null for unknown (hidden) columns.
+ */
+export function appendRowToColValues(
+  target: BulkColValues,
+  columns: ColumnInfo[],
+  colValues: Record<string, CellValue>,
+): void {
+  const typeByColId = new Map(columns.map(c => [c.colId, c.type]));
+  for (const colId of Object.keys(target)) {
+    const val = colValues[colId];
+    if (val !== undefined) {
+      target[colId].push(val);
+    } else {
+      const type = typeByColId.get(colId);
+      target[colId].push(type ? defaultForColumnType(type) : null);
+    }
+  }
+  // Also cover columns present in colValues but not yet in target (rare --
+  // typically the server's AddRecord includes only some columns).
+  for (const colId of Object.keys(colValues)) {
+    if (!target[colId]) {
+      // Pad previous rows with null, then add this value
+      const prevLen = Math.max(0, (target[Object.keys(target)[0]]?.length || 1) - 1);
+      target[colId] = new Array(prevLen).fill(null);
+      target[colId].push(colValues[colId]);
+    }
+  }
+}
+
+/**
+ * Track an action group that originated from this client so we can undo it.
+ * Undo actions themselves aren't pushed onto the stack -- they move the pointer.
+ */
+export function handleOwnActionGroup(state: AppState, ag: { actionNum: number; actionHash: string; isUndo?: boolean; otherId?: number }): void {
+  if (!ag.actionNum || !ag.actionHash) { return; }
+  if (ag.isUndo) {
+    // Undo confirmation. executeUndo already decremented the pointer.
+    return;
+  }
+  if (_expectingRedo) {
+    // This is the confirmation of a redo we just issued. The stack already
+    // has this entry (at state.undoPointer). Just advance the pointer.
+    _expectingRedo = false;
+    if (state.undoPointer < state.undoStack.length) {
+      state.undoPointer++;
+    }
+    return;
+  }
+  // New edit: trim any redo entries (they've been invalidated) and push
+  state.undoStack = state.undoStack.slice(0, state.undoPointer);
+  state.undoStack.push({ actionNum: ag.actionNum, actionHash: ag.actionHash });
+  state.undoPointer = state.undoStack.length;
+  // Cap stack size to avoid unbounded growth
+  const MAX = 100;
+  if (state.undoStack.length > MAX) {
+    const drop = state.undoStack.length - MAX;
+    state.undoStack = state.undoStack.slice(drop);
+    state.undoPointer = state.undoStack.length;
+  }
+}
+
+async function executeUndo(state: AppState, conn: ConsoleConnection): Promise<void> {
+  // Clamp pointer defensively in case something got out of sync
+  if (state.undoPointer > state.undoStack.length) {
+    state.undoPointer = state.undoStack.length;
+  }
+  if (state.undoPointer <= 0) {
+    state.statusMessage = "Nothing to undo";
+    return;
+  }
+  const entry = state.undoStack[state.undoPointer - 1];
+  if (!entry) {
+    state.statusMessage = "Nothing to undo";
+    return;
+  }
+  try {
+    await conn.applyUserActionsById(
+      [entry.actionNum], [entry.actionHash], true, { otherId: entry.actionNum },
+    );
+    // The undo broadcast has isUndo=true so the handler doesn't touch the
+    // stack; we manage the pointer here.
+    state.undoPointer--;
+    state.statusMessage = "Undone";
+  } catch (e: any) {
+    state.statusMessage = `Undo failed: ${e.message}`;
+  }
+}
+
+async function executeRedo(state: AppState, conn: ConsoleConnection): Promise<void> {
+  if (state.undoPointer > state.undoStack.length) {
+    state.undoPointer = state.undoStack.length;
+  }
+  if (state.undoPointer >= state.undoStack.length) {
+    state.statusMessage = "Nothing to redo";
+    return;
+  }
+  const entry = state.undoStack[state.undoPointer];
+  if (!entry) {
+    state.statusMessage = "Nothing to redo";
+    return;
+  }
+  try {
+    // Mark that the next fromSelf non-undo broadcast is a redo, so the handler
+    // doesn't push a duplicate entry. The redo's docUserAction broadcast may
+    // arrive before OR after this await resolves, so we can't safely do
+    // pointer++ here -- let the handler advance the pointer.
+    _expectingRedo = true;
+    await conn.applyUserActionsById(
+      [entry.actionNum], [entry.actionHash], false, { otherId: entry.actionNum },
+    );
+    state.statusMessage = "Redone";
+  } catch (e: any) {
+    state.statusMessage = `Redo failed: ${e.message}`;
+    _expectingRedo = false;
+  }
+}
+
+// Module flag used by handleOwnActionGroup to differentiate a redo broadcast
+// (which shouldn't add to the stack -- just advance the pointer) from a fresh
+// edit (which should trim and push).
+let _expectingRedo = false;
+
+/** Test-only: set _expectingRedo to simulate the executeRedo path. */
+export function _setExpectingRedo(v: boolean): void { _expectingRedo = v; }
+
 function doRender(state: AppState): void {
   process.stdout.write(render(state));
 }
 
 function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void): void {
+  disableMode2027();
   process.stdout.write(showCursor());
   process.stdout.write("\x1b[0m");
   if (process.stdout.isTTY) {
@@ -988,7 +1131,77 @@ function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void
   process.stdin.removeAllListeners("data");
   process.stdin.removeAllListeners("end");
   process.stdout.removeAllListeners("resize");
+
+  if (_verbose) {
+    printWidthReport();
+  }
+
   conn.close().then(() => resolve()).catch(() => resolve());
+}
+
+/**
+ * Print a report of characters that measured differently than string-width
+ * predicted, along with terminal identification. Useful for reporting
+ * upstream or to the string-width maintainers.
+ */
+function printWidthReport(): void {
+  const report = getWidthReport();
+  const inTmux = !!process.env.TMUX || (process.env.TERM || "").startsWith("screen") || (process.env.TERM || "").startsWith("tmux");
+  const inScreen = !!process.env.STY;
+  process.stderr.write("\n--- Terminal emoji width report ---\n");
+  process.stderr.write("Environment:\n");
+  for (const key of ["TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+                     "LC_TERMINAL", "LC_TERMINAL_VERSION", "VTE_VERSION",
+                     "KITTY_WINDOW_ID", "WEZTERM_VERSION", "WT_SESSION",
+                     "TMUX", "STY"]) {
+    if (process.env[key]) {
+      process.stderr.write(`  ${key}=${process.env[key]}\n`);
+    }
+  }
+  if (report.daResponse) {
+    const esc = report.daResponse.replace(/\x1b/g, "ESC");
+    process.stderr.write(`  DA response: ${esc}\n`);
+  }
+  if (report.da2Response) {
+    const esc = report.da2Response.replace(/\x1b/g, "ESC");
+    process.stderr.write(`  DA2 response: ${esc}\n`);
+  }
+  const m2027 = getMode2027Status();
+  process.stderr.write(`  Mode 2027 (grapheme-cluster widths): ${m2027.status}${m2027.enabled ? " (enabled)" : ""}\n`);
+
+  if (inTmux || inScreen) {
+    const mux = inTmux ? "tmux" : "screen";
+    process.stderr.write(`\nNOTE: running inside ${mux}. Cursor-position (CPR) responses reflect\n`);
+    process.stderr.write(`${mux}'s width calculation, NOT the host terminal's actual rendering.\n`);
+    process.stderr.write(`${mux} does not currently speak mode 2027, so width mismatches between\n`);
+    process.stderr.write(`${mux} and the host terminal's font can cause visual misalignment that\n`);
+    process.stderr.write(`this tool cannot detect or correct.\n`);
+    if (inTmux) {
+      process.stderr.write(`Options:\n`);
+      process.stderr.write(`  * Run outside tmux to let this tool probe the host terminal directly.\n`);
+      process.stderr.write(`  * Upgrade to tmux 3.6+ and try these options:\n`);
+      process.stderr.write(`      set -g variation-selector-always-wide on\n`);
+      process.stderr.write(`      set -g codepoint-widths "U+XXXX=2,..." (for specific problem chars)\n`);
+      process.stderr.write(`  * Build tmux with --enable-utf8proc for better Unicode handling.\n`);
+    }
+  }
+
+  if (report.overrides.length === 0) {
+    process.stderr.write("\nNo width mismatches detected.\n");
+  } else {
+    process.stderr.write(`\n${report.overrides.length} character(s) rendered differently than string-width predicted:\n`);
+    for (const o of report.overrides) {
+      process.stderr.write(`  ${o.char}  ${o.codepoints}  expected=${o.expected}  actual=${o.actual}\n`);
+    }
+  }
+
+  if (report.flagPairDelta !== 0) {
+    process.stderr.write(`\nFlag pair delta: ${report.flagPairDelta > 0 ? "+" : ""}${report.flagPairDelta} (all flag emoji render ${report.flagPairDelta > 0 ? "wider" : "narrower"} than predicted)\n`);
+  }
+  if (report.vs16Delta !== 0) {
+    process.stderr.write(`VS16 delta: ${report.vs16Delta > 0 ? "+" : ""}${report.vs16Delta} (char+VS16 sequences render ${report.vs16Delta > 0 ? "wider" : "narrower"} than predicted)\n`);
+  }
+  process.stderr.write("--- end ---\n");
 }
 
 /**
@@ -1040,25 +1253,18 @@ function applyDocActions(state: AppState, actions: DocAction[]): void {
       case "AddRecord": {
         const [, , rowId, colValues] = action as any;
         state.rowIds.push(rowId);
-        for (const col of state.columns) {
-          if (!state.colValues[col.colId]) {
-            state.colValues[col.colId] = [];
-          }
-          state.colValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
-        }
+        appendRowToColValues(state.colValues, state.columns, colValues);
         break;
       }
       case "BulkAddRecord": {
         const [, , rowIds, colValues] = action as any;
         for (let i = 0; i < rowIds.length; i++) {
           state.rowIds.push(rowIds[i]);
-          for (const col of state.columns) {
-            if (!state.colValues[col.colId]) {
-              state.colValues[col.colId] = [];
-            }
-            const vals = colValues[col.colId];
-            state.colValues[col.colId].push(vals ? vals[i] : defaultForColumnType(col.type));
+          const perRow: Record<string, any> = {};
+          for (const colId of Object.keys(colValues)) {
+            perRow[colId] = colValues[colId]?.[i];
           }
+          appendRowToColValues(state.colValues, state.columns, perRow);
         }
         break;
       }
@@ -1156,20 +1362,12 @@ function applyDocActionToPane(pane: PaneState, action: DocAction): void {
     case "AddRecord": {
       const [, , rowId, colValues] = action as any;
       pane.allRowIds.push(rowId);
-      for (const col of pane.columns) {
-        if (!pane.allColValues[col.colId]) {
-          pane.allColValues[col.colId] = [];
-        }
-        pane.allColValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
-      }
-      // Also add to visible (linking will re-filter next)
       pane.rowIds.push(rowId);
-      for (const col of pane.columns) {
-        if (!pane.colValues[col.colId]) {
-          pane.colValues[col.colId] = [];
-        }
-        pane.colValues[col.colId].push(colValues[col.colId] ?? defaultForColumnType(col.type));
-      }
+      // Update ALL columns in allColValues/colValues (not just visible), so
+      // hidden columns like manualSort stay in sync. Out-of-sync arrays
+      // confuse sorting (e.g. new row with undefined manualSort sorts first).
+      appendRowToColValues(pane.allColValues, pane.columns, colValues);
+      appendRowToColValues(pane.colValues, pane.columns, colValues);
       break;
     }
     case "BulkAddRecord": {
@@ -1177,14 +1375,12 @@ function applyDocActionToPane(pane: PaneState, action: DocAction): void {
       for (let i = 0; i < rowIds.length; i++) {
         pane.allRowIds.push(rowIds[i]);
         pane.rowIds.push(rowIds[i]);
-        for (const col of pane.columns) {
-          if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
-          if (!pane.colValues[col.colId]) { pane.colValues[col.colId] = []; }
-          const vals = colValues[col.colId];
-          const v = vals ? vals[i] : defaultForColumnType(col.type);
-          pane.allColValues[col.colId].push(v);
-          pane.colValues[col.colId].push(v);
+        const perRow: Record<string, any> = {};
+        for (const colId of Object.keys(colValues)) {
+          perRow[colId] = colValues[colId]?.[i];
         }
+        appendRowToColValues(pane.allColValues, pane.columns, perRow);
+        appendRowToColValues(pane.colValues, pane.columns, perRow);
       }
       break;
     }

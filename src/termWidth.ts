@@ -128,6 +128,111 @@ export function _resetProbes(): void {
 }
 
 /**
+ * Return a report of all characters whose terminal width differs from
+ * string-width's prediction, suitable for printing as a diagnostic or
+ * reporting upstream. Includes the derived deltas.
+ */
+export function getWidthReport(): {
+  overrides: Array<{ char: string; codepoints: string; expected: number; actual: number }>;
+  flagPairDelta: number;
+  vs16Delta: number;
+  daResponse?: string;
+  da2Response?: string;
+} {
+  const overrides = Array.from(_overrides.entries()).map(([ch, actual]) => ({
+    char: ch,
+    codepoints: [...ch].map(c => "U+" + c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")).join(" "),
+    expected: stringWidth(ch),
+    actual,
+  }));
+  return {
+    overrides,
+    flagPairDelta: _flagPairDelta,
+    vs16Delta: _vs16Delta,
+    daResponse: _daResponse,
+    da2Response: _da2Response,
+  };
+}
+
+// Cached terminal identification responses
+let _daResponse: string | undefined;
+let _da2Response: string | undefined;
+// Mode 2027 (Terminal Unicode Core): when supported and enabled, the terminal
+// uses grapheme-cluster-aware widths (matches Unicode UAX#29), which means
+// string-width's predictions should be trustworthy.
+let _mode2027Status: "supported" | "unsupported" | "unknown" = "unknown";
+let _mode2027Enabled = false;
+
+export function getMode2027Status(): { status: string; enabled: boolean } {
+  return { status: _mode2027Status, enabled: _mode2027Enabled };
+}
+
+/**
+ * Query the terminal's Device Attributes (primary and secondary) to capture
+ * identifying information. Called during calibration.
+ */
+async function queryDeviceAttributes(): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) { return; }
+
+  const queryOne = (query: string, matcher: RegExp): Promise<string | undefined> => {
+    return new Promise<string | undefined>((resolve) => {
+      const timer = setTimeout(() => { cleanup(); resolve(undefined); }, 200);
+      const wasRaw = process.stdin.isRaw;
+      const wasPaused = process.stdin.isPaused();
+      const hadListenersBefore = process.stdin.listenerCount("data") > 0;
+      if (!wasRaw) { process.stdin.setRawMode(true); }
+      process.stdin.resume();
+
+      let buf = "";
+      const onData = (data: Buffer) => {
+        buf += data.toString();
+        const match = buf.match(matcher);
+        if (match) { cleanup(); resolve(match[0]); }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        process.stdin.removeListener("data", onData);
+        if (!wasRaw) { process.stdin.setRawMode(false); }
+        if (wasPaused) { process.stdin.pause(); }
+        if (!hadListenersBefore) { process.stdin.unref(); }
+      };
+      process.stdin.on("data", onData);
+      process.stdout.write(query);
+    });
+  };
+
+  // Primary DA: ESC[c -> response like ESC[?<params>c
+  _daResponse = await queryOne("\x1b[c", /\x1b\[\?[\d;]*c/);
+  // Secondary DA: ESC[>c -> response like ESC[><model>;<version>;<options>c
+  _da2Response = await queryOne("\x1b[>c", /\x1b\[>[\d;]*c/);
+  // Mode 2027 (Terminal Unicode Core) DECRQM query
+  // Response: ESC[?2027;<n>$y where n = 0(not recognized) 1(set) 2(reset) 3(permanently set) 4(permanently reset)
+  const resp2027 = await queryOne("\x1b[?2027$p", /\x1b\[\?2027;\d+\$y/);
+  if (resp2027) {
+    const nMatch = resp2027.match(/;(\d+)\$y/);
+    const n = nMatch ? parseInt(nMatch[1], 10) : 0;
+    if (n === 1 || n === 2 || n === 3) {
+      _mode2027Status = "supported";
+      // Enable it so the terminal uses UAX#29 grapheme-cluster widths
+      process.stdout.write("\x1b[?2027h");
+      _mode2027Enabled = true;
+    } else {
+      _mode2027Status = "unsupported";
+    }
+  } else {
+    _mode2027Status = "unsupported";
+  }
+}
+
+/** Disable mode 2027 if we enabled it (call on shutdown). */
+export function disableMode2027(): void {
+  if (_mode2027Enabled) {
+    process.stdout.write("\x1b[?2027l");
+    _mode2027Enabled = false;
+  }
+}
+
+/**
  * Characters to test. These are commonly problematic across terminals.
  */
 const TEST_CHARS = [
@@ -201,6 +306,9 @@ async function measureWidth(ch: string, timeout = 500): Promise<number | null> {
  */
 export async function calibrateTermWidth(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) { return; }
+
+  // Query Device Attributes for terminal identification (for diagnostics)
+  await queryDeviceAttributes();
 
   // Save cursor, do measurements, restore cursor and clear the test line
   const rows = process.stdout.rows || 24;

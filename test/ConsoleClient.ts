@@ -8,7 +8,7 @@ import {
 import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
-import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter, getVisualPaneOrder } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter, getVisualPaneOrder, handleOwnActionGroup, _setExpectingRedo, appendRowToColValues } from "../src/ConsoleMain.js";
 import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
@@ -1682,6 +1682,180 @@ describe("ConsoleClient", function() {
       pane.cursorCol = 2;
       ensureColVisible(pane, 200);
       assert.equal(pane.scrollCol, 2);
+    });
+  });
+
+  describe("appendRowToColValues (AddRecord row insertion)", function() {
+    it("appends to all columns including hidden ones", function() {
+      const target = { Name: ["Alice"], Age: [30], manualSort: [10.5] };
+      const columns = [
+        { colId: "Name", type: "Text", label: "Name" },
+        { colId: "Age", type: "Int", label: "Age" },
+      ];
+      // Server includes manualSort even though it's hidden
+      appendRowToColValues(target, columns, { Name: "Bob", Age: 25, manualSort: 20.5 });
+      assert.deepEqual(target.Name, ["Alice", "Bob"]);
+      assert.deepEqual(target.Age, [30, 25]);
+      assert.deepEqual(target.manualSort, [10.5, 20.5]);
+    });
+
+    it("uses defaults for visible columns missing in colValues", function() {
+      const target = { Name: ["Alice"], Done: [false], manualSort: [10] };
+      const columns = [
+        { colId: "Name", type: "Text", label: "Name" },
+        { colId: "Done", type: "Bool", label: "Done" },
+      ];
+      // Only manualSort in the action (simulating server's empty AddRecord broadcast)
+      appendRowToColValues(target, columns, { manualSort: 30 });
+      assert.deepEqual(target.Name, ["Alice", ""]); // Text default
+      assert.deepEqual(target.Done, [false, false]); // Bool default
+      assert.deepEqual(target.manualSort, [10, 30]);
+    });
+
+    it("keeps manualSort in sync so sort order stays correct", function() {
+      // Reproduces the bug: if manualSort isn't appended, new row gets
+      // undefined and sorts before all numbers.
+      const target = {
+        Name: ["First", "Second"],
+        manualSort: [10, 20],
+      };
+      const columns = [{ colId: "Name", type: "Text", label: "Name" }];
+      // Simulate server broadcast including manualSort
+      appendRowToColValues(target, columns, { Name: "Third", manualSort: 30 });
+      // Now check that sorting by manualSort gives [First, Second, Third]
+      // (not [Third, First, Second] as the bug produced).
+      const indices = [0, 1, 2];
+      indices.sort((a, b) =>
+        (target.manualSort[a] as number) - (target.manualSort[b] as number)
+      );
+      const sortedNames = indices.map(i => target.Name[i]);
+      assert.deepEqual(sortedNames, ["First", "Second", "Third"]);
+    });
+
+    it("handles columns present in colValues but not yet in target", function() {
+      const target: any = { Name: ["Alice"], Age: [30] };
+      const columns = [
+        { colId: "Name", type: "Text", label: "Name" },
+        { colId: "Age", type: "Int", label: "Age" },
+      ];
+      // Unknown column "NewCol" in the action
+      appendRowToColValues(target, columns, { Name: "Bob", NewCol: "surprise" });
+      assert.deepEqual(target.Name, ["Alice", "Bob"]);
+      // Previous row padded with null, new value added
+      assert.deepEqual(target.NewCol, [null, "surprise"]);
+    });
+  });
+
+  describe("undo stack (handleOwnActionGroup)", function() {
+    function freshState() {
+      const s = createInitialState("test");
+      return s;
+    }
+    function ag(num: number, hash = `h${num}`, extras: any = {}) {
+      return { actionNum: num, actionHash: hash, ...extras };
+    }
+
+    it("pushes new edits and advances pointer", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1]);
+      assert.equal(s.undoPointer, 1);
+      handleOwnActionGroup(s, ag(2));
+      handleOwnActionGroup(s, ag(3));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2, 3]);
+      assert.equal(s.undoPointer, 3);
+    });
+
+    it("ignores undo confirmations (isUndo=true)", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      // Simulate user doing undo: pointer moved by executeUndo
+      s.undoPointer = 1;
+      // Undo broadcast arrives with isUndo=true
+      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true }));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
+      assert.equal(s.undoPointer, 1);
+    });
+
+    it("redo broadcast advances pointer (_expectingRedo flag)", function() {
+      try {
+        const s = freshState();
+        handleOwnActionGroup(s, ag(1));
+        handleOwnActionGroup(s, ag(2));
+        // User undid both: pointer=0
+        s.undoPointer = 0;
+        // User presses redo: executeRedo sets _expectingRedo
+        _setExpectingRedo(true);
+        // Broadcast for the redo arrives
+        handleOwnActionGroup(s, ag(10, "h10"));
+        // Stack should be unchanged; pointer advances
+        assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
+        assert.equal(s.undoPointer, 1);
+      } finally {
+        _setExpectingRedo(false);
+      }
+    });
+
+    it("race: broadcast before pointer increment produces consistent state", function() {
+      // Simulates: executeRedo sets _expectingRedo, RPC sent.
+      // Broadcast arrives BEFORE RPC resolves -> handler advances pointer.
+      // Then executeRedo's post-await path runs; with our fix it does NOT
+      // double-increment the pointer.
+      try {
+        const s = freshState();
+        handleOwnActionGroup(s, ag(1));
+        s.undoPointer = 0; // after undo
+        _setExpectingRedo(true);
+        // Broadcast arrives first (race case):
+        handleOwnActionGroup(s, ag(5, "h5"));
+        assert.equal(s.undoPointer, 1);
+        assert.deepEqual(s.undoStack.map(e => e.actionNum), [1]);
+        // If we then do another undo (clamped access should not crash):
+        assert.doesNotThrow(() => {
+          if (s.undoPointer > 0) {
+            const e = s.undoStack[s.undoPointer - 1];
+            assert.isOk(e);
+            assert.equal(e.actionNum, 1);
+          }
+        });
+      } finally {
+        _setExpectingRedo(false);
+      }
+    });
+
+    it("new edit after undo trims the redo tail", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      handleOwnActionGroup(s, ag(3));
+      // User undoes twice: pointer=1
+      s.undoPointer = 1;
+      // User makes a new edit
+      handleOwnActionGroup(s, ag(10));
+      // Stack should be [1, 10] (2 and 3 discarded as redo tail)
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 10]);
+      assert.equal(s.undoPointer, 2);
+    });
+
+    it("ignores malformed action groups", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, { actionNum: 0, actionHash: "h0" } as any);
+      handleOwnActionGroup(s, { actionNum: 1, actionHash: "" } as any);
+      assert.equal(s.undoStack.length, 0);
+      assert.equal(s.undoPointer, 0);
+    });
+
+    it("caps stack at 100 entries and keeps pointer in sync", function() {
+      const s = freshState();
+      for (let i = 1; i <= 120; i++) {
+        handleOwnActionGroup(s, ag(i, `h${i}`));
+      }
+      assert.equal(s.undoStack.length, 100);
+      assert.equal(s.undoPointer, 100);
+      // Oldest entries should have been dropped
+      assert.equal(s.undoStack[0].actionNum, 21);
+      assert.equal(s.undoStack[99].actionNum, 120);
     });
   });
 

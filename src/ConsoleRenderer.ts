@@ -71,6 +71,10 @@ export interface AppState {
   cellViewerContent: string;
   cellViewerScroll: number;
   cellViewerLinkIndex: number;  // -1 = no link selected, 0+ = selected link
+  // Undo/redo stack of (actionNum, actionHash) for actions this client made.
+  // Pointer indicates current position; items past pointer are "redo" candidates.
+  undoStack: Array<{ actionNum: number; actionHash: string }>;
+  undoPointer: number; // index of next action that would be undone; 0 = nothing to undo
   // Theme
   theme: Theme;
 }
@@ -105,6 +109,8 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     cellViewerContent: "",
     cellViewerScroll: 0,
     cellViewerLinkIndex: -1,
+    undoStack: [],
+    undoPointer: 0,
     // Theme
     theme: theme || defaultTheme,
   };
@@ -638,7 +644,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
     lines.push(t.helpBar(`Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
     const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
-    lines.push(t.helpBar(`\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  t:tables${pagesHint}  T:theme  q:quit`));
+    lines.push(t.helpBar(`\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  u:undo  t:tables${pagesHint}  T:theme  q:quit`));
   }
 
   // Status
@@ -754,7 +760,7 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
   } else {
     const collapsedHint = hasCollapsed ? "  1-9:widget" : "";
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  p:pages${collapsedHint}  T:theme  q:quit`);
+      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  u:undo  p:pages${collapsedHint}  T:theme  q:quit`);
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
 
