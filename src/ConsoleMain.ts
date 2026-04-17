@@ -1,6 +1,6 @@
 import { BulkColValues, ColumnInfo, DocAction } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
-import { AppState, PaneState, createInitialState, render, showCursor } from "./ConsoleRenderer.js";
+import { AppState, PaneState, createInitialState, render, showCursor, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleRenderer.js";
 import {
   executeAddRow, executeDeleteRow, executeSaveEdit, handleKeypress
 } from "./ConsoleInput.js";
@@ -90,6 +90,12 @@ export async function consoleMain(options: {
     doRender(state);
     scheduleProbe(state);
   });
+
+  // Enter the alternate screen buffer so the initial state is clean and
+  // the user's scrollback isn't polluted with our rendering.
+  if (process.stdout.isTTY) {
+    process.stdout.write(ENTER_ALT_SCREEN);
+  }
 
   // Initial render
   doRender(state);
@@ -968,7 +974,13 @@ function doRender(state: AppState): void {
 
 function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void): void {
   process.stdout.write(showCursor());
-  process.stdout.write("\x1b[0m\x1b[2J\x1b[H");
+  process.stdout.write("\x1b[0m");
+  if (process.stdout.isTTY) {
+    process.stdout.write(EXIT_ALT_SCREEN);
+  } else {
+    // No alt screen was entered (non-TTY); still clear what we wrote
+    process.stdout.write("\x1b[2J\x1b[H");
+  }
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }

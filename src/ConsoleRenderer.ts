@@ -7,18 +7,22 @@ import { getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides } fr
 
 // ANSI escape codes (non-stylistic, always needed)
 const ESC = "\x1b[";
-const CLEAR_SCREEN = `${ESC}2J`;
+const CLEAR_LINE = `${ESC}K`; // clear from cursor to end of line
 const MOVE_TO = (row: number, col: number) => `${ESC}${row + 1};${col + 1}H`;
 const HIDE_CURSOR = `${ESC}?25l`;
 const SHOW_CURSOR = `${ESC}?25h`;
+export const ENTER_ALT_SCREEN = `${ESC}?1049h`;
+export const EXIT_ALT_SCREEN = `${ESC}?1049l`;
 
 /**
- * Build the screen preamble: hide cursor, set background color, clear screen.
- * For themes with a screenBg (e.g. blue background), the bg SGR is set before
- * clearing so the entire terminal fills with that color.
+ * Build the screen preamble: hide cursor, set background color, move to home.
+ * We don't clear the screen on every render (causes flicker); instead each
+ * render overwrites every visible cell. The alternate screen buffer gives us
+ * a clean starting state, and line-based renders use \x1b[K to erase any
+ * stale trailing content.
  */
 function screenPreamble(t: Theme): string {
-  return HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN + MOVE_TO(0, 0);
+  return HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 }
 
 export type AppMode = "table_picker" | "page_picker" | "grid" | "editing" | "confirm_delete" | "overlay" | "cell_viewer";
@@ -193,7 +197,12 @@ export function displayWidth(s: string): number {
       continue;
     }
 
-    // Single-char override, or fall back to string-width
+    // Single-char override, or fall back to string-width.
+    // For ZWJ sequences / skin tones, we walk char-by-char. This matches
+    // partial-compose and non-composing terminals naturally (e.g.
+    // 🧙+ZWJ+♀+VS16 = 2+0+1+0 = 3 cells). Fully-composing terminals get
+    // walked overcount, but the background probe catches and stores an
+    // override for the exact composed sequence.
     const override = getTermWidthOverride(chars[i]);
     if (override !== undefined) {
       w += override;
@@ -537,7 +546,9 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   // Status
   lines.push(getStatusLine(state, termCols));
 
-  return screenPreamble(t) + lines.join("\n");
+  // Clear to end of line after each line to overwrite any stale content
+  // left from previous renders without clearing the whole screen (flicker).
+  return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
 }
 
 function renderGrid(state: AppState, termRows: number, termCols: number): string {
@@ -626,13 +637,14 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   } else if (state.mode === "confirm_delete") {
     lines.push(t.helpBar(`Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
-    lines.push(t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  t:tables  T:theme  q:quit"));
+    const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
+    lines.push(t.helpBar(`\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  t:tables${pagesHint}  T:theme  q:quit`));
   }
 
   // Status
   lines.push(getStatusLine(state, termCols));
 
-  let result = screenPreamble(t) + lines.join("\n");
+  let result = screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
 
   // Show terminal cursor at edit position when editing
   if (state.mode === "editing" && !state.cellViewerContent) {
@@ -678,7 +690,9 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
   lines.push(t.helpBar("\u2191\u2193:select  Enter:open  t:tables  T:theme  q:quit"));
   lines.push(getStatusLine(state, termCols));
 
-  return screenPreamble(t) + lines.join("\n");
+  // Clear to end of line after each line to overwrite any stale content
+  // left from previous renders without clearing the whole screen (flicker).
+  return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
 }
 
 function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
@@ -716,7 +730,7 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
   }
 
   // Flatten buffer to string with ANSI positioning
-  let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
+  let output = HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 
   // Collapsed widget tray at top
   if (hasCollapsed) {
@@ -800,7 +814,7 @@ function renderOverlay(
   };
   renderPaneInto(buf, overlayLeaf, pane, true, state.mode, state.editValue, state.editCursorPos, t);
 
-  let output = HIDE_CURSOR + (t.screenBg || "") + CLEAR_SCREEN;
+  let output = HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
   if (trayHeight > 0) {
     output += MOVE_TO(0, 0) + renderCollapsedTray(state, termCols);
   }

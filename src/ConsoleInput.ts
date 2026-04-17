@@ -134,6 +134,7 @@ function parseKey(buf: Buffer): string {
  * Handle a keypress in table picker mode.
  */
 function handleTablePickerKey(key: string, state: AppState): InputAction {
+  const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
   switch (key) {
     case "up":
       if (state.selectedTableIndex > 0) {
@@ -144,6 +145,18 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
       if (state.selectedTableIndex < state.tableIds.length - 1) {
         state.selectedTableIndex++;
       }
+      return { type: "render" };
+    case "pageup":
+      state.selectedTableIndex = Math.max(0, state.selectedTableIndex - pageSize);
+      return { type: "render" };
+    case "pagedown":
+      state.selectedTableIndex = Math.min(state.tableIds.length - 1, state.selectedTableIndex + pageSize);
+      return { type: "render" };
+    case "home":
+      state.selectedTableIndex = 0;
+      return { type: "render" };
+    case "end":
+      state.selectedTableIndex = Math.max(0, state.tableIds.length - 1);
       return { type: "render" };
     case "enter":
       return { type: "select_table" };
@@ -233,6 +246,12 @@ function handleGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "v":
       return { type: "view_cell" };
+    case "escape":
+    case "p":
+      if (state.pages.length > 0) {
+        return { type: "switch_to_pages" };
+      }
+      return { type: "switch_to_tables" };
     case "r":
       return { type: "refresh" };
     case "t":
@@ -341,6 +360,7 @@ function handleConfirmDeleteKey(key: string, state: AppState): InputAction {
  * Handle a keypress in page picker mode.
  */
 function handlePagePickerKey(key: string, state: AppState): InputAction {
+  const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
   switch (key) {
     case "up":
       if (state.selectedPageIndex > 0) {
@@ -351,6 +371,18 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
       if (state.selectedPageIndex < state.pages.length - 1) {
         state.selectedPageIndex++;
       }
+      return { type: "render" };
+    case "pageup":
+      state.selectedPageIndex = Math.max(0, state.selectedPageIndex - pageSize);
+      return { type: "render" };
+    case "pagedown":
+      state.selectedPageIndex = Math.min(state.pages.length - 1, state.selectedPageIndex + pageSize);
+      return { type: "render" };
+    case "home":
+      state.selectedPageIndex = 0;
+      return { type: "render" };
+    case "end":
+      state.selectedPageIndex = Math.max(0, state.pages.length - 1);
       return { type: "render" };
     case "enter":
       return { type: "select_page" };

@@ -1354,11 +1354,15 @@ describe("ConsoleClient", function() {
       assert.equal(displayWidth("\u{1F468}\u200D\u{1F4BB}"), 2); // man technologist
     });
 
-    it("ZWJ sequences: non-composing terminal (calibration triggers walking)", function() {
-      // When calibration has detected any discrepancy, we walk char-by-char.
-      // 👨(2) + ZWJ(0) + 🦰(2) = 4 cells, matching a non-composing terminal.
+    it("ZWJ sequences: walking mode sums char-by-char with VS16 composed", function() {
+      // In walking mode, the VS16-composed handling gives base+VS16 as a
+      // composed unit. For 🧙‍♀️ = mage(2) + ZWJ(0) + (♀+VS16 as composed)(2) = 4.
+      // For fully-composing terminals, the background probe stores a specific
+      // override for the composed sequence that takes priority.
       try {
-        _setFlagPairDelta(2); // any non-zero value triggers walking mode
+        _setFlagPairDelta(2); // walking mode active
+        assert.equal(displayWidth("\u{1F9D9}\u200D\u2640\uFE0F"), 4);
+        // Red-haired man: mage is wide, ZWJ=0, 🦰 is wide, total 4
         assert.equal(displayWidth("\u{1F468}\u200D\u{1F9B0}"), 4);
       } finally {
         _setFlagPairDelta(0);
