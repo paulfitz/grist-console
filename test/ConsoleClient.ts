@@ -8,7 +8,7 @@ import {
 import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
-import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter, getVisualPaneOrder } from "../src/ConsoleMain.js";
 import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
@@ -1678,6 +1678,72 @@ describe("ConsoleClient", function() {
       pane.cursorCol = 2;
       ensureColVisible(pane, 200);
       assert.equal(pane.scrollCol, 2);
+    });
+  });
+
+  describe("getVisualPaneOrder", function() {
+    function makePane(sectionId: number): PaneState {
+      return {
+        sectionInfo: {
+          sectionId, tableRef: 1, tableId: "T", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: [],
+        rowIds: [], allRowIds: [],
+        colValues: {}, allColValues: {},
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+    }
+
+    it("returns panes in layout-tree leaf order (top-to-bottom, left-to-right)", function() {
+      // Layout with two panes side-by-side on top, one pane below:
+      //   [0][1]
+      //   [ 2 ]
+      // But state.panes is in metadata order [2, 0, 1]
+      const state = createInitialState("testDoc");
+      state.panes = [makePane(30), makePane(10), makePane(20)];
+      state.layout = {
+        top: 0, left: 0, width: 80, height: 24, direction: "vertical",
+        children: [
+          {
+            top: 0, left: 0, width: 80, height: 12, direction: "horizontal",
+            children: [
+              { top: 0, left: 0, width: 40, height: 12, paneIndex: 1 },  // upper-left
+              { top: 0, left: 40, width: 40, height: 12, paneIndex: 2 }, // upper-right
+            ],
+          },
+          { top: 12, left: 0, width: 80, height: 12, paneIndex: 0 }, // bottom
+        ],
+      };
+      state.collapsedPaneIndices = [];
+      const order = getVisualPaneOrder(state);
+      // Visual order: upper-left, upper-right, bottom = pane indices [1, 2, 0]
+      assert.deepEqual(order, [1, 2, 0]);
+    });
+
+    it("excludes collapsed panes from visual order", function() {
+      const state = createInitialState("testDoc");
+      state.panes = [makePane(10), makePane(20), makePane(30)];
+      state.layout = {
+        top: 0, left: 0, width: 80, height: 24, direction: "vertical",
+        children: [
+          { top: 0, left: 0, width: 80, height: 12, paneIndex: 0 },
+          { top: 12, left: 0, width: 80, height: 12, paneIndex: 2 },
+        ],
+      };
+      state.collapsedPaneIndices = [1];
+      const order = getVisualPaneOrder(state);
+      assert.deepEqual(order, [0, 2]);
+    });
+
+    it("falls back to pane-array order when no layout", function() {
+      const state = createInitialState("testDoc");
+      state.panes = [makePane(10), makePane(20), makePane(30)];
+      state.layout = null;
+      state.collapsedPaneIndices = [1];
+      const order = getVisualPaneOrder(state);
+      assert.deepEqual(order, [0, 2]);
     });
   });
 

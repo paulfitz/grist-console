@@ -7,7 +7,7 @@ import {
 import {
   extractPages, extractSectionsForView, extractFiltersForSection,
   extractCollapsedSectionIds, getLayoutSpecForView,
-  parseLayoutSpec, computeLayout, getColumnInfo,
+  parseLayoutSpec, computeLayout, getColumnInfo, collectLeaves,
   getColIdByRef as layoutGetColIdByRef, Rect,
 } from "./ConsoleLayout.js";
 import { CellValue } from "./types.js";
@@ -227,24 +227,12 @@ export async function consoleMain(options: {
           doRender(state);
           break;
         case "focus_next_pane": {
-          const collapsedSet = new Set(state.collapsedPaneIndices);
-          const visibleCount = state.panes.filter((_, i) => !collapsedSet.has(i)).length;
-          if (visibleCount > 1) {
-            do {
-              state.focusedPane = (state.focusedPane + 1) % state.panes.length;
-            } while (collapsedSet.has(state.focusedPane));
-          }
+          cyclePane(state, 1);
           doRender(state);
           break;
         }
         case "focus_prev_pane": {
-          const collapsedSet = new Set(state.collapsedPaneIndices);
-          const visibleCount = state.panes.filter((_, i) => !collapsedSet.has(i)).length;
-          if (visibleCount > 1) {
-            do {
-              state.focusedPane = (state.focusedPane + state.panes.length - 1) % state.panes.length;
-            } while (collapsedSet.has(state.focusedPane));
-          }
+          cyclePane(state, -1);
           doRender(state);
           break;
         }
@@ -325,6 +313,35 @@ let _replayToHandler: ((data: Buffer) => Promise<void>) | null = null;
  * Schedule background probing of unmeasured characters in the current view.
  * Debounced so it only fires when the UI is quiet.
  */
+/**
+ * Return pane indices in visual order (top-to-bottom, left-to-right),
+ * excluding collapsed panes. Uses the layout tree's leaf order.
+ */
+export function getVisualPaneOrder(state: AppState): number[] {
+  if (!state.layout) {
+    // No layout yet: fall back to pane-array order, minus collapsed
+    const collapsed = new Set(state.collapsedPaneIndices);
+    return state.panes.map((_, i) => i).filter(i => !collapsed.has(i));
+  }
+  const collapsed = new Set(state.collapsedPaneIndices);
+  return collectLeaves(state.layout)
+    .map(l => l.paneIndex)
+    .filter((idx): idx is number => idx !== undefined && !collapsed.has(idx));
+}
+
+/**
+ * Move focus to the next pane in visual order. direction=1 for next, -1 for prev.
+ */
+function cyclePane(state: AppState, direction: 1 | -1): void {
+  const order = getVisualPaneOrder(state);
+  if (order.length < 2) { return; }
+  const currentIdx = order.indexOf(state.focusedPane);
+  const nextIdx = currentIdx < 0
+    ? 0
+    : (currentIdx + direction + order.length) % order.length;
+  state.focusedPane = order[nextIdx];
+}
+
 function scheduleProbe(state: AppState): void {
   if (_probeTimer) { clearTimeout(_probeTimer); }
   _probeTimer = setTimeout(() => runProbe(state), 400);
