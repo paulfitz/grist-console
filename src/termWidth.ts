@@ -155,6 +155,10 @@ async function measureWidth(ch: string, timeout = 500): Promise<number | null> {
     }, timeout);
 
     const wasRaw = process.stdin.isRaw;
+    const wasPaused = process.stdin.isPaused();
+    // Remember whether anyone else was listening before us, so we know
+    // whether we're the only user and can fully release stdin on cleanup.
+    const hadListenersBefore = process.stdin.listenerCount("data") > 0;
     if (!wasRaw) { process.stdin.setRawMode(true); }
     process.stdin.resume();
 
@@ -175,6 +179,11 @@ async function measureWidth(ch: string, timeout = 500): Promise<number | null> {
       clearTimeout(timer);
       process.stdin.removeListener("data", onData);
       if (!wasRaw) { process.stdin.setRawMode(false); }
+      // Restore paused state so we don't keep the event loop alive
+      if (wasPaused) { process.stdin.pause(); }
+      // If we were the only listener, fully release stdin so the event
+      // loop can exit (important in test environments).
+      if (!hadListenersBefore) { process.stdin.unref(); }
     };
 
     process.stdin.on("data", onData);
