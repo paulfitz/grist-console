@@ -3,7 +3,7 @@ import { formatCellValue } from "./ConsoleCellFormat.js";
 import { BoxSpec, LayoutNode, PageInfo, SectionInfo, collectLeaves } from "./ConsoleLayout.js";
 import { Theme, defaultTheme } from "./ConsoleTheme.js";
 import stringWidth from "string-width";
-import { getTermWidthOverride, hasOverrides } from "./termWidth.js";
+import { getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides } from "./termWidth.js";
 
 // ANSI escape codes (non-stylistic, always needed)
 const ESC = "\x1b[";
@@ -140,30 +140,67 @@ function computeColLayout(state: AppState): ColLayout[] {
 export function displayWidth(s: string): number {
   // Strip ANSI escape codes before measuring
   const clean = s.replace(/\x1b\[[0-9;]*m/g, "");
-  if (!hasOverrides()) { return stringWidth(clean); }
+  const flagPairDelta = getFlagPairDelta();
+  const vs16Delta = getVs16Delta();
+  // When no calibration has detected any discrepancy, trust string-width fully
+  // (handles composing terminals correctly for ZWJ, flags, etc.)
+  if (!hasOverrides() && flagPairDelta === 0 && vs16Delta === 0) {
+    return stringWidth(clean);
+  }
 
-  // Apply per-character overrides where the terminal disagrees with string-width
+  // Walk through the string char-by-char. For non-composing terminals this
+  // naturally gives the correct width (each emoji counted individually,
+  // ZWJ counted as 0). Flags need a delta since walking gives 1+1=2 for an
+  // RI pair, but the terminal may render them as 4 cells unjoined.
   let w = 0;
-  let remaining = clean;
-  while (remaining.length > 0) {
+  const chars = [...clean];
+  let i = 0;
+  while (i < chars.length) {
+    // Check multi-codepoint overrides first, PREFERRING longer matches so that
+    // e.g. a "❤️" (2-char) override beats a bare "❤" (1-char) override, and
+    // a full ZWJ sequence beats individual components.
     let matched = false;
-    // Check multi-codepoint sequences first (e.g. ❤️ = ❤ + VS16)
-    for (let len = Math.min(remaining.length, 4); len >= 1; len--) {
-      const candidate = [...remaining].slice(0, len).join("");
+    for (let len = Math.min(chars.length - i, 8); len >= 2; len--) {
+      const candidate = chars.slice(i, i + len).join("");
       const override = getTermWidthOverride(candidate);
       if (override !== undefined) {
         w += override;
-        remaining = remaining.slice(candidate.length);
+        i += len;
         matched = true;
         break;
       }
     }
-    if (!matched) {
-      // No override -- use string-width for this character
-      const ch = [...remaining][0];
-      w += stringWidth(ch);
-      remaining = remaining.slice(ch.length);
+    if (matched) { continue; }
+
+    // Regional-indicator pair (flag emoji) -- check BEFORE single-char overrides
+    const code = chars[i].codePointAt(0)!;
+    const isRI = code >= 0x1F1E6 && code <= 0x1F1FF;
+    if (isRI && i + 1 < chars.length) {
+      const nextCode = chars[i + 1].codePointAt(0)!;
+      if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
+        w += 2 + flagPairDelta;
+        i += 2;
+        continue;
+      }
     }
+
+    // Character followed by VS16: handle as emoji-composed BEFORE single-char
+    // override, because the same base char can render differently with VS16
+    // (e.g. ❤ alone = 1 cell text, ❤+VS16 = 2 cells emoji).
+    if (i + 1 < chars.length && chars[i + 1].codePointAt(0) === 0xFE0F) {
+      w += stringWidth(chars[i] + chars[i + 1]) + vs16Delta;
+      i += 2;
+      continue;
+    }
+
+    // Single-char override, or fall back to string-width
+    const override = getTermWidthOverride(chars[i]);
+    if (override !== undefined) {
+      w += override;
+    } else {
+      w += stringWidth(chars[i]);
+    }
+    i++;
   }
   return w;
 }
@@ -241,8 +278,14 @@ export function applyChoiceColor(formatted: string, value: CellValue, colType: s
   }
 
   if (baseType === "ChoiceList" && Array.isArray(value) && value[0] === "L") {
-    // Color each choice in the comma-separated list
     const items = value.slice(1) as string[];
+    const fullJoined = items.map(v => String(v)).join(", ");
+    // If the formatted string was truncated, we can't reliably color per-item
+    // while preserving alignment -- return plain formatted text instead.
+    if (formatted !== fullJoined) {
+      return formatted;
+    }
+    // Color each choice in the comma-separated list
     const colored = items.map(item => {
       const colors = opts[item];
       if (!colors) { return String(item); }
@@ -488,7 +531,8 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   }
 
   // Key help
-  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  T:theme  q:quit"));
+  const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
+  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}  T:theme  q:quit`));
 
   // Status
   lines.push(getStatusLine(state, termCols));

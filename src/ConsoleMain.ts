@@ -14,7 +14,7 @@ import { CellValue } from "./types.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
 import { exec } from "child_process";
-import { calibrateTermWidth } from "./termWidth.js";
+import { calibrateTermWidth, probeChar, hasProbed } from "./termWidth.js";
 
 /**
  * Main entry point for the console client.
@@ -88,10 +88,12 @@ export async function consoleMain(options: {
       applyAllSectionLinks(state, conn);
     }
     doRender(state);
+    scheduleProbe(state);
   });
 
   // Initial render
   doRender(state);
+  scheduleProbe(state);
 
   // Return a promise that resolves only when the user quits.
   return new Promise<void>((resolve) => {
@@ -113,7 +115,16 @@ export async function consoleMain(options: {
       doCleanup(state, conn, resolve);
     });
 
-    process.stdin.on("data", async (data: Buffer) => {
+    const dataHandler = async (data: Buffer) => {
+      // If probing is active, buffer input to replay after
+      if (_probing) {
+        _probingBuffer.push(data);
+        return;
+      }
+      await handleData(data);
+    };
+
+    const handleData = async (data: Buffer) => {
       const action = handleKeypress(Buffer.from(data), state);
       switch (action.type) {
         case "quit":
@@ -293,8 +304,161 @@ export async function consoleMain(options: {
         case "none":
           break;
       }
-    });
+      // After every user action, consider scheduling a probe
+      scheduleProbe(state);
+    };
+
+    process.stdin.on("data", dataHandler);
+
+    // Save so probe machinery can replay buffered input through it
+    _replayToHandler = handleData;
   });
+}
+
+// Probe coordination state (module-level so it's shared across the event loop)
+let _probing = false;
+const _probingBuffer: Buffer[] = [];
+let _probeTimer: ReturnType<typeof setTimeout> | null = null;
+let _replayToHandler: ((data: Buffer) => Promise<void>) | null = null;
+
+/**
+ * Schedule background probing of unmeasured characters in the current view.
+ * Debounced so it only fires when the UI is quiet.
+ */
+function scheduleProbe(state: AppState): void {
+  if (_probeTimer) { clearTimeout(_probeTimer); }
+  _probeTimer = setTimeout(() => runProbe(state), 400);
+}
+
+/**
+ * Collect unusual characters (non-ASCII, non-Latin, etc.) from visible data
+ * that haven't been probed yet. Also extracts 2-char sequences like char+VS16
+ * and flag pairs that need to be probed as units.
+ */
+function collectUnprobedChars(state: AppState): string[] {
+  const seen = new Set<string>();
+  const isSkinTone = (code: number) => code >= 0x1F3FB && code <= 0x1F3FF;
+  const extract = (s: string) => {
+    const cps = [...s];
+    for (let i = 0; i < cps.length; i++) {
+      const code = cps[i].codePointAt(0)!;
+      // Check for keycap sequences (1 + VS16 + U+20E3) even for ASCII base chars
+      if (i + 2 < cps.length
+          && cps[i + 1].codePointAt(0) === 0xFE0F
+          && cps[i + 2].codePointAt(0) === 0x20E3) {
+        const unit = cps[i] + cps[i + 1] + cps[i + 2];
+        if (!hasProbed(unit)) { seen.add(unit); }
+        i += 2;
+        continue;
+      }
+      if (code < 0x2000) { continue; }
+
+      // Extend over VS16, skin tone modifiers, and ZWJ+following emoji
+      let end = i + 1;
+      while (end < cps.length) {
+        const c = cps[end].codePointAt(0)!;
+        if (c === 0xFE0F || isSkinTone(c)) { end++; continue; }
+        if (c === 0x200D && end + 1 < cps.length) {
+          // ZWJ followed by another emoji (+ optional modifiers)
+          end += 2;
+          while (end < cps.length) {
+            const cc = cps[end].codePointAt(0)!;
+            if (cc === 0xFE0F || isSkinTone(cc)) { end++; continue; }
+            break;
+          }
+          continue;
+        }
+        break;
+      }
+      if (end > i + 1) {
+        const unit = cps.slice(i, end).join("");
+        if (!hasProbed(unit)) { seen.add(unit); }
+        i = end - 1;
+        continue;
+      }
+
+      // Regional indicator pair (flag): probe as a 2-char unit
+      if (code >= 0x1F1E6 && code <= 0x1F1FF && i + 1 < cps.length) {
+        const nextCode = cps[i + 1].codePointAt(0)!;
+        if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
+          const pair = cps[i] + cps[i + 1];
+          if (!hasProbed(pair)) { seen.add(pair); }
+          i++; // skip the paired RI
+          continue;
+        }
+      }
+      // Single char
+      if (!hasProbed(cps[i])) { seen.add(cps[i]); }
+    }
+  };
+  const collectFrom = (colValues: BulkColValues, rowIds: number[], cols: ColumnInfo[]) => {
+    for (const col of cols) {
+      const vals = colValues[col.colId];
+      if (!vals) { continue; }
+      for (let i = 0; i < Math.min(rowIds.length, 100); i++) {
+        const v = vals[i];
+        if (typeof v !== "string") { continue; }
+        extract(v);
+      }
+    }
+  };
+  if (state.panes.length > 0) {
+    for (const pane of state.panes) {
+      collectFrom(pane.colValues, pane.rowIds, pane.columns);
+    }
+  } else {
+    collectFrom(state.colValues, state.rowIds, state.columns);
+  }
+  return [...seen];
+}
+
+/**
+ * Run the probe: measure unprobed characters in the visible data, updating
+ * overrides if the terminal disagrees with string-width. If any overrides
+ * change, re-render.
+ */
+async function runProbe(state: AppState): Promise<void> {
+  if (_probing) { return; }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) { return; }
+  const chars = collectUnprobedChars(state);
+  if (chars.length === 0) { return; }
+
+  _probing = true;
+  try {
+    // Limit per batch to avoid long probes
+    const batch = chars.slice(0, 5);
+    // Save cursor, probes write to the status line and restore
+    process.stdout.write("\x1b[s");
+    let updated = false;
+    for (const ch of batch) {
+      const changed = await probeChar(ch);
+      if (changed) { updated = true; }
+    }
+    // Clear the last row we used and restore cursor
+    const rows = process.stdout.rows || 24;
+    process.stdout.write(`\x1b[${rows};1H\x1b[2K\x1b[u`);
+
+    if (updated) {
+      doRender(state);
+    }
+  } finally {
+    _probing = false;
+    // Replay any buffered input that arrived during probing, stripping any
+    // CPR response bytes (\x1b[<row>;<col>R) that were for the probe.
+    const buffered = _probingBuffer.splice(0);
+    if (_replayToHandler) {
+      for (const data of buffered) {
+        const str = data.toString().replace(/\x1b\[\d+;\d+R/g, "");
+        if (str.length > 0) {
+          await _replayToHandler(Buffer.from(str));
+        }
+      }
+    }
+    // Schedule another round if there are still unprobed chars
+    if (collectUnprobedChars(state).length > 0) {
+      scheduleProbe(state);
+    }
+  }
 }
 
 async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void> {
@@ -443,12 +607,31 @@ function recomputeLayout(state: AppState): void {
  * Copy all* to visible, then apply sorting and filtering to the visible copy.
  * This keeps all* as the unmodified server data so it can be re-applied safely.
  */
-function reapplySortAndFilter(pane: PaneState, metaTables: any): void {
+export function reapplySortAndFilter(pane: PaneState, metaTables: any): void {
   pane.rowIds = [...pane.allRowIds];
   pane.colValues = copyColValues(pane.allColValues);
   applySectionFilters(pane, pane.sectionInfo.sectionId, metaTables);
-  if (pane.sectionInfo.sortColRefs) {
-    applySortSpec(pane, pane.sectionInfo.sortColRefs, metaTables);
+  const spec = pane.sectionInfo.sortColRefs;
+  const hasSort = spec && spec !== "[]";
+  if (hasSort) {
+    applySortSpec(pane, spec, metaTables);
+  } else if (pane.colValues.manualSort) {
+    // Default: sort by manualSort column (Grist's natural ordering)
+    applySortByColumn(pane, "manualSort", 1);
+  }
+}
+
+/**
+ * Sort a pane's visible data by a specific column id, in-place.
+ */
+function applySortByColumn(pane: PaneState, colId: string, direction: 1 | -1): void {
+  const values = pane.colValues[colId];
+  if (!values) { return; }
+  const indices = Array.from({ length: pane.rowIds.length }, (_, i) => i);
+  indices.sort((a, b) => compareCellValues(values[a], values[b]) * direction);
+  pane.rowIds = indices.map(i => pane.rowIds[i]);
+  for (const k of Object.keys(pane.colValues)) {
+    pane.colValues[k] = indices.map(i => pane.colValues[k][i]);
   }
 }
 

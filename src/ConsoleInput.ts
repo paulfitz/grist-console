@@ -147,6 +147,12 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "enter":
       return { type: "select_table" };
+    case "p":
+    case "escape":
+      if (state.pages.length > 0) {
+        return { type: "switch_to_pages" };
+      }
+      return { type: "none" };
     case "T":
       return { type: "cycle_theme" };
     case "q":

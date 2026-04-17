@@ -10,6 +10,12 @@ import stringWidth from "string-width";
 
 // Map from character/grapheme cluster to measured terminal width
 const _overrides = new Map<string, number>();
+// If regional indicator pairs (flags) render wider than predicted, store the delta
+// so we can apply it to any flag, not just the one we tested.
+let _flagPairDelta = 0;
+// If characters with VS16 (variation selector for emoji presentation) render
+// differently than string-width predicts, store the per-VS16 delta.
+let _vs16Delta = 0;
 
 /**
  * Get the measured terminal width of a character, or undefined if not calibrated.
@@ -19,10 +25,106 @@ export function getTermWidthOverride(ch: string): number | undefined {
 }
 
 /**
+ * Return the extra width to add for each regional-indicator pair (flag emoji)
+ * in a string, based on calibration. Zero if the terminal matches string-width.
+ */
+export function getFlagPairDelta(): number {
+  return _flagPairDelta;
+}
+
+/**
+ * Return the extra width to add for each VS16 (U+FE0F emoji variation selector)
+ * following a base character. Zero if the terminal matches string-width.
+ */
+export function getVs16Delta(): number {
+  return _vs16Delta;
+}
+
+/** Count ZWJ (U+200D) characters in a string. */
+export function countZwjs(s: string): number {
+  let count = 0;
+  for (const ch of s) {
+    if (ch.codePointAt(0) === 0x200D) { count++; }
+  }
+  return count;
+}
+
+/** Test-only: set the flag pair delta directly. */
+export function _setFlagPairDelta(delta: number): void {
+  _flagPairDelta = delta;
+}
+
+/** Test-only: set the VS16 delta directly. */
+export function _setVs16Delta(delta: number): void {
+  _vs16Delta = delta;
+}
+
+/**
+ * Count regional-indicator pairs in a string (each pair = one flag emoji).
+ */
+export function countFlagPairs(s: string): number {
+  let count = 0;
+  let inPair = false;
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    const isRI = code >= 0x1F1E6 && code <= 0x1F1FF;
+    if (isRI && !inPair) {
+      inPair = true;
+    } else if (isRI && inPair) {
+      count++;
+      inPair = false;
+    } else {
+      inPair = false;
+    }
+  }
+  return count;
+}
+
+/**
  * True if calibration found any differences from string-width.
  */
 export function hasOverrides(): boolean {
   return _overrides.size > 0;
+}
+
+// Tracks characters we've already probed so we don't re-check them.
+const _probed = new Set<string>();
+
+/** True if this character has been probed (calibrated). */
+export function hasProbed(ch: string): boolean {
+  return _probed.has(ch);
+}
+
+/**
+ * Probe a single character: measure its actual width and update overrides
+ * if it differs from string-width's prediction. Returns true if an override
+ * was added or updated.
+ *
+ * Caller must have already removed any conflicting stdin data listeners --
+ * this function installs its own temporary listener. Cursor position is
+ * saved and restored, so the character is not visible to the user after.
+ */
+export async function probeChar(ch: string, timeout = 200): Promise<boolean> {
+  if (_probed.has(ch)) { return false; }
+  _probed.add(ch);
+  const expected = stringWidth(ch);
+  const actual = await measureWidth(ch, timeout);
+  if (actual === null || actual === expected) { return false; }
+  _overrides.set(ch, actual);
+  const diff = actual - expected;
+  // Update deltas for pattern-based overrides
+  if (countFlagPairs(ch) === 1 && countZwjs(ch) === 0) {
+    _flagPairDelta = diff;
+  }
+  if (ch.length === 2 && ch.charCodeAt(1) === 0xFE0F) {
+    _vs16Delta = diff;
+  }
+  return true;
+}
+
+/** Clear probe cache -- for tests only. */
+export function _resetProbes(): void {
+  _probed.clear();
 }
 
 /**
@@ -35,6 +137,8 @@ const TEST_CHARS = [
   "\u{1F680}",      // 🚀  rocket
   "\u{1F4A9}",      // 💩  pile of poo
   "\u2B50",         // ⭐  star
+  "\u{1F1FA}\u{1F1F8}", // 🇺🇸  US flag (regional indicator pair)
+  "\u{1F468}\u200D\u{1F4BB}", // 👨‍💻  ZWJ sequence (man technologist)
 ];
 
 /**
@@ -94,10 +198,27 @@ export async function calibrateTermWidth(): Promise<void> {
   process.stdout.write("\x1b[s"); // save cursor
 
   for (const ch of TEST_CHARS) {
+    _probed.add(ch);
     const expected = stringWidth(ch);
     const actual = await measureWidth(ch);
     if (actual !== null && actual !== expected) {
       _overrides.set(ch, actual);
+      const diff = actual - expected;
+      // If a regional-indicator pair (flag) rendered wider than expected,
+      // remember the delta to apply to all flags.
+      if (countFlagPairs(ch) === 1 && countZwjs(ch) === 0) {
+        _flagPairDelta = diff;
+      }
+      // If a single-char-plus-VS16 sequence rendered differently than expected,
+      // remember the per-VS16 delta to apply to any char+VS16 combination.
+      if (ch.length === 2 && ch.charCodeAt(1) === 0xFE0F) {
+        _vs16Delta = diff;
+      }
+      // Note: ZWJ sequences don't need a separate delta. Adding the ZWJ emoji
+      // to TEST_CHARS is still useful because it triggers hasOverrides(),
+      // which enables the walking mode. In walking mode, each individual emoji
+      // in a ZWJ sequence is counted at its own width (with ZWJ at 0), which
+      // naturally matches non-composing terminals.
     }
   }
 

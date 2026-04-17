@@ -6,8 +6,9 @@ import {
   getLayoutSpecForView, Rect,
 } from "../src/ConsoleLayout.js";
 import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
+import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
-import { applySortSpec, applySectionFilters, compareCellValues } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter } from "../src/ConsoleMain.js";
 import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
@@ -936,6 +937,79 @@ describe("ConsoleClient", function() {
       applySortSpec(pane, "[10]", meta);
       assert.deepEqual(pane.colValues.Val, [null, 5, 10]);
     });
+
+    it("default: sorts by manualSort when sortColRefs is empty", function() {
+      // rowIds returned by server may be in arbitrary order, but manualSort
+      // defines the display order when no explicit sort is configured.
+      const pane: PaneState = {
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "ToDo", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: [{ colId: "Task", type: "Text", label: "Task" }],
+        rowIds: [1, 2, 3, 4],
+        allRowIds: [1, 2, 3, 4],
+        colValues: {
+          Task: ["A", "B", "C", "D"],
+          manualSort: [30, 10, 40, 20],
+        },
+        allColValues: {
+          Task: ["A", "B", "C", "D"],
+          manualSort: [30, 10, 40, 20],
+        },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
+      reapplySortAndFilter(pane, meta);
+      // Expected order by manualSort 10, 20, 30, 40: rowIds 2, 4, 1, 3
+      assert.deepEqual(pane.rowIds, [2, 4, 1, 3]);
+      assert.deepEqual(pane.colValues.Task, ["B", "D", "A", "C"]);
+    });
+
+    it("default: also handles sortColRefs = '[]'", function() {
+      const pane: PaneState = {
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "ToDo", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "[]",
+        },
+        columns: [{ colId: "Task", type: "Text", label: "Task" }],
+        rowIds: [1, 2, 3],
+        allRowIds: [1, 2, 3],
+        colValues: {
+          Task: ["A", "B", "C"],
+          manualSort: [20, 10, 30],
+        },
+        allColValues: {
+          Task: ["A", "B", "C"],
+          manualSort: [20, 10, 30],
+        },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
+      reapplySortAndFilter(pane, meta);
+      assert.deepEqual(pane.rowIds, [2, 1, 3]); // B(10), A(20), C(30)
+    });
+
+    it("default: no manualSort column -> no sorting", function() {
+      const pane: PaneState = {
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
+          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: [{ colId: "Val", type: "Text", label: "Val" }],
+        rowIds: [3, 1, 2],
+        allRowIds: [3, 1, 2],
+        colValues: { Val: ["C", "A", "B"] },
+        allColValues: { Val: ["C", "A", "B"] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      };
+      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
+      reapplySortAndFilter(pane, meta);
+      assert.deepEqual(pane.rowIds, [3, 1, 2]); // unchanged
+    });
   });
 
   describe("compareCellValues", function() {
@@ -1253,6 +1327,103 @@ describe("ConsoleClient", function() {
       assert.equal(displayWidth("\u2705 Done"), 7);    // 2 + 1 + 4
       assert.equal(displayWidth("\u2764\uFE0F tag"), 6); // 2 + 1 + 3
     });
+
+    it("counts flag emojis as width 2", function() {
+      // US flag = regional indicator U + S
+      assert.equal(displayWidth("\u{1F1FA}\u{1F1F8}"), 2);
+      // Two flags
+      assert.equal(displayWidth("\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}"), 4);
+    });
+
+    it("applies flag pair delta when terminal disagrees", function() {
+      // Simulate a terminal where flags render as 4 cells (two regional indicators)
+      // instead of 2. String-width says 2, actual is 4, delta is +2.
+      try {
+        _setFlagPairDelta(2);
+        assert.equal(displayWidth("\u{1F1FA}\u{1F1F8}"), 4); // one flag, +2 delta
+        assert.equal(displayWidth("\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}"), 8); // two flags, +4
+        assert.equal(displayWidth("A\u{1F1FA}\u{1F1F8}B"), 6); // 1 + 4 + 1
+      } finally {
+        _setFlagPairDelta(0);
+      }
+    });
+
+    it("ZWJ sequences: composing terminal (no calibration) sees composed width", function() {
+      // With no calibration, uses string-width on whole string. Composed = 2.
+      assert.equal(displayWidth("\u{1F468}\u200D\u{1F9B0}"), 2); // red-haired man
+      assert.equal(displayWidth("\u{1F468}\u200D\u{1F4BB}"), 2); // man technologist
+    });
+
+    it("ZWJ sequences: non-composing terminal (calibration triggers walking)", function() {
+      // When calibration has detected any discrepancy, we walk char-by-char.
+      // 👨(2) + ZWJ(0) + 🦰(2) = 4 cells, matching a non-composing terminal.
+      try {
+        _setFlagPairDelta(2); // any non-zero value triggers walking mode
+        assert.equal(displayWidth("\u{1F468}\u200D\u{1F9B0}"), 4);
+      } finally {
+        _setFlagPairDelta(0);
+      }
+    });
+
+    it("VS16 delta applies to any char+VS16 pair, not just tested chars", function() {
+      // Simulate a terminal where VS16 emojis render as 1 cell (text-style) instead of 2.
+      // string-width says 2, actual is 1, delta is -1 per VS16.
+      try {
+        _setVs16Delta(-1);
+        // Tested char
+        assert.equal(displayWidth("\u2764\uFE0F"), 1); // heart + VS16: 2 + (-1) = 1
+        // Other chars with VS16 should also get the delta
+        assert.equal(displayWidth("\u2600\uFE0F"), 1); // sun + VS16
+        assert.equal(displayWidth("\u26A0\uFE0F"), 1); // warning + VS16
+        // Mixed: "hi ❤️ x" = h(1) + i(1) + sp(1) + ❤️(1) + sp(1) + x(1) = 6
+        assert.equal(displayWidth("hi \u2764\uFE0F x"), 6);
+      } finally {
+        _setVs16Delta(0);
+      }
+    });
+
+    it("VS16 delta of zero: uses string-width composed", function() {
+      try {
+        _setFlagPairDelta(2); // trigger walking without affecting VS16
+        // Composed width used for char+VS16 in walking mode
+        assert.equal(displayWidth("\u2764\uFE0F"), 2); // heart + VS16 = emoji-style, 2
+        assert.equal(displayWidth("\u2600\uFE0F"), 2); // sun + VS16 = emoji-style, 2
+      } finally {
+        _setFlagPairDelta(0);
+      }
+    });
+  });
+
+  describe("countFlagPairs", function() {
+    it("counts regional indicator pairs", function() {
+      assert.equal(countFlagPairs(""), 0);
+      assert.equal(countFlagPairs("hello"), 0);
+      assert.equal(countFlagPairs("\u{1F1FA}\u{1F1F8}"), 1);
+      assert.equal(countFlagPairs("\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}"), 2);
+      assert.equal(countFlagPairs("A\u{1F1FA}\u{1F1F8}B\u{1F1EC}\u{1F1E7}C"), 2);
+      // Odd number of regional indicators -- only pairs count
+      assert.equal(countFlagPairs("\u{1F1FA}"), 0);
+    });
+  });
+
+  describe("probeChar", function() {
+    it("returns false when not a TTY (no-op)", async function() {
+      // In test environment stdin isn't a TTY, so probe can't run.
+      _resetProbes();
+      assert.isFalse(hasProbed("\u{1F600}"));
+      const result = await probeChar("\u{1F600}");
+      // Marked as probed (to avoid re-attempting) but no override added
+      assert.isTrue(hasProbed("\u{1F600}"));
+      assert.isFalse(result);
+    });
+
+    it("does not re-probe already-probed chars", async function() {
+      _resetProbes();
+      await probeChar("\u{1F600}");
+      // Second call returns false without attempting
+      const result = await probeChar("\u{1F600}");
+      assert.isFalse(result);
+    });
   });
 
   describe("extractCollapsedSectionIds", function() {
@@ -1445,6 +1616,27 @@ describe("ConsoleClient", function() {
       assert.include(result, "\x1b[48;2;170;0;0m"); // A's fill
       assert.include(result, "\x1b[48;2;0;187;0m"); // B's fill
     });
+
+    it("ChoiceList: returns plain formatted when truncated (preserves column width)", function() {
+      // Repro of a real bug: when ChoiceList column width is calibrated from
+      // the first 100 rows but a later row has more items, plainText gets
+      // truncated to col.width but applyChoiceColor was rebuilding the full
+      // untruncated colored string, causing column misalignment.
+      const opts = {
+        choiceOptions: {
+          "Backlog": { fillColor: "#000000", textColor: "#FFFFFF" },
+          "Jordi": { fillColor: "#E00A17", textColor: "#FFFFFF" },
+        },
+      };
+      // formatted has been truncated (doesn't match the full joined value)
+      const truncated = "Backl\u2026"; // "Backl…"
+      const result = applyChoiceColor(
+        truncated, ["L", "Backlog", "Jordi"] as any, "ChoiceList", opts,
+      );
+      // Should return the plain truncated text (not ANSI-colored full string)
+      assert.equal(result, truncated);
+      assert.notInclude(result, "\x1b[");
+    });
   });
 
   describe("ensureColVisible", function() {
@@ -1486,6 +1678,35 @@ describe("ConsoleClient", function() {
       pane.cursorCol = 2;
       ensureColVisible(pane, 200);
       assert.equal(pane.scrollCol, 2);
+    });
+  });
+
+  describe("table picker key handling", function() {
+    it("p switches to pages when pages exist", function() {
+      const state = createInitialState("testDoc");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      const action = handleKeypress(Buffer.from("p"), state);
+      assert.equal(action.type, "switch_to_pages");
+    });
+
+    it("Escape also switches to pages", function() {
+      const state = createInitialState("testDoc");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      const action = handleKeypress(Buffer.from("\x1b"), state);
+      assert.equal(action.type, "switch_to_pages");
+    });
+
+    it("p does nothing when no pages exist", function() {
+      const state = createInitialState("testDoc");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      state.pages = [];
+      const action = handleKeypress(Buffer.from("p"), state);
+      assert.equal(action.type, "none");
     });
   });
 
