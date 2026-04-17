@@ -639,6 +639,29 @@ export function compareCellValues(a: CellValue, b: CellValue): number {
 }
 
 /**
+ * Test whether a cell value passes a filter, with special handling for list
+ * columns (ChoiceList, RefList). For list columns, at least one item must
+ * be in (or out of) the included/excluded set. Empty lists get a fallback
+ * value (null for RefList, "" for ChoiceList).
+ */
+function testListAwareFilter(
+  val: CellValue, values: Set<any>, include: boolean,
+  isListCol: boolean, colType: string,
+): boolean {
+  if (isListCol && Array.isArray(val) && val[0] === "L") {
+    const items = val.slice(1);
+    if (items.length === 0) {
+      // Empty list -- use fallback
+      const fallback = colType === "ChoiceList" ? "" : null;
+      return values.has(fallback) === include;
+    }
+    return items.some(item => values.has(item) === include);
+  }
+  const key = Array.isArray(val) ? JSON.stringify(val) : val;
+  return values.has(key) === include;
+}
+
+/**
  * Apply _grist_Filters to a pane's visible rowIds/colValues, removing rows that
  * don't pass the filter. Does not modify allRowIds/allColValues.
  */
@@ -651,8 +674,11 @@ export function applySectionFilters(
   // Build a filter function for each column
   const colFilters: Array<{ colId: string; test: (val: CellValue) => boolean }> = [];
   for (const [colRef, filterJson] of filterMap) {
-    const colId = layoutGetColIdByRef(metaTables, colRef);
+    const colInfo = getColumnInfo(metaTables, colRef);
+    const colId = colInfo?.colId;
     if (!colId || !pane.colValues[colId]) { continue; }
+    const colType = colInfo.type || "";
+    const isListCol = colType === "ChoiceList" || colType.startsWith("RefList:");
 
     let spec: any;
     try {
@@ -676,23 +702,21 @@ export function applySectionFilters(
         },
       });
     } else if (spec.included) {
-      // Inclusion filter -- only show listed values
       const values = new Set(spec.included.map(
         (v: CellValue) => Array.isArray(v) ? JSON.stringify(v) : v
       ));
       colFilters.push({
         colId,
-        test: (val) => values.has(Array.isArray(val) ? JSON.stringify(val) : val),
+        test: (val) => testListAwareFilter(val, values, true, isListCol, colType),
       });
     } else if (spec.excluded) {
-      // Exclusion filter -- hide listed values
       if (spec.excluded.length === 0) { continue; } // empty excluded = no filter
       const values = new Set(spec.excluded.map(
         (v: CellValue) => Array.isArray(v) ? JSON.stringify(v) : v
       ));
       colFilters.push({
         colId,
-        test: (val) => !values.has(Array.isArray(val) ? JSON.stringify(val) : val),
+        test: (val) => testListAwareFilter(val, values, false, isListCol, colType),
       });
     }
   }

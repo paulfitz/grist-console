@@ -980,7 +980,7 @@ describe("ConsoleClient", function() {
     }
 
     function makeMetaWithFilters(
-      cols: Array<{ ref: number; colId: string }>,
+      cols: Array<{ ref: number; colId: string; type?: string }>,
       filters: Array<{ sectionId: number; colRef: number; filter: string }>
     ) {
       return {
@@ -990,7 +990,7 @@ describe("ConsoleClient", function() {
           {
             colId: cols.map(c => c.colId),
             parentId: cols.map(() => 1),
-            type: cols.map(() => "Text"),
+            type: cols.map(c => c.type || "Text"),
             label: cols.map(c => c.colId),
           },
         ],
@@ -1102,6 +1102,94 @@ describe("ConsoleClient", function() {
       const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
       applySectionFilters(pane, 1, meta);
       assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
+    });
+
+    it("filters ChoiceList by inclusion -- matches if any item is in set", function() {
+      // Person is a ChoiceList, values like ["L", "Dmitry"] or ["L", "Paul", "Alice"]
+      const pane = makePaneData([1, 2, 3, 4], {
+        Person: [
+          ["L", "Dmitry"],
+          ["L", "Paul", "Alice"],
+          ["L", "Bob"],
+          null,
+        ],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Person", type: "ChoiceList" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"included":["Paul","Bob"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      // Row 2 has Paul, row 3 has Bob -- both pass
+      assert.deepEqual(pane.rowIds, [2, 3]);
+    });
+
+    it("filters ChoiceList by inclusion with null", function() {
+      // Include rows where Person is null OR contains "Backlog"
+      const pane = makePaneData([1, 2, 3, 4], {
+        Person: [
+          ["L", "Dmitry"],
+          ["L", "Backlog"],
+          null,
+          ["L", "Paul"],
+        ],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Person", type: "ChoiceList" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"included":[null,"Backlog"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      // Row 2 has Backlog, row 3 is null -- both pass
+      assert.deepEqual(pane.rowIds, [2, 3]);
+    });
+
+    it("filters ChoiceList by exclusion", function() {
+      const pane = makePaneData([1, 2, 3, 4], {
+        Dept: [
+          ["L", "MKT"],
+          ["L", "Dev"],
+          ["L", "📒 Docs"],
+          ["L", "Sales"],
+        ],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Dept", type: "ChoiceList" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"excluded":["MKT","📒 Docs"]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      // Rows 2 and 4 remain (Dev, Sales)
+      assert.deepEqual(pane.rowIds, [2, 4]);
+    });
+
+    it("filters RefList by inclusion -- matches if any row ID is in set", function() {
+      // RefList values look like ["L", 412, 413]
+      const pane = makePaneData([1, 2, 3], {
+        Dates: [
+          ["L", 412],
+          ["L", 421, 422],
+          ["L", 500],
+        ],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Dates", type: "RefList:Dates" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"included":[421,500]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      // Row 2 contains 421, row 3 is 500 -- both pass
+      assert.deepEqual(pane.rowIds, [2, 3]);
+    });
+
+    it("filters ChoiceList with empty list using fallback", function() {
+      // Empty ChoiceList should match "" in the filter set
+      const pane = makePaneData([1, 2, 3], {
+        Dept: [["L"], ["L", "Dev"], null],
+      });
+      const meta = makeMetaWithFilters(
+        [{ ref: 10, colId: "Dept", type: "ChoiceList" }],
+        [{ sectionId: 1, colRef: 10, filter: '{"included":[""]}' }]
+      );
+      applySectionFilters(pane, 1, meta);
+      // Only row 1 (empty list) passes
+      assert.deepEqual(pane.rowIds, [1]);
     });
   });
 
