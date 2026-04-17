@@ -14,7 +14,11 @@ import { CellValue } from "./types.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
 import { exec } from "child_process";
-import { calibrateTermWidth, probeChar, hasProbed, getWidthReport, getMode2027Status, disableMode2027 } from "./termWidth.js";
+import { calibrateTermWidth, disableMode2027 } from "./termWidth.js";
+import { handleOwnActionGroup, executeUndo, executeRedo } from "./UndoStack.js";
+import {
+  scheduleProbe, bufferInput, setReplayHandler, isProbing, printWidthReport,
+} from "./WidthProbe.js";
 
 /**
  * Main entry point for the console client.
@@ -92,7 +96,7 @@ export async function consoleMain(options: {
       handleOwnActionGroup(state, actionGroup);
     }
     doRender(state);
-    scheduleProbe(state);
+    scheduleProbe(state, doRender);
   });
 
   // Enter the alternate screen buffer so the initial state is clean and
@@ -103,7 +107,7 @@ export async function consoleMain(options: {
 
   // Initial render
   doRender(state);
-  scheduleProbe(state);
+  scheduleProbe(state, doRender);
 
   // Return a promise that resolves only when the user quits.
   return new Promise<void>((resolve) => {
@@ -127,8 +131,8 @@ export async function consoleMain(options: {
 
     const dataHandler = async (data: Buffer) => {
       // If probing is active, buffer input to replay after
-      if (_probing) {
-        _probingBuffer.push(data);
+      if (isProbing()) {
+        bufferInput(data);
         return;
       }
       await handleData(data);
@@ -311,27 +315,18 @@ export async function consoleMain(options: {
           break;
       }
       // After every user action, consider scheduling a probe
-      scheduleProbe(state);
+      scheduleProbe(state, doRender);
     };
 
     process.stdin.on("data", dataHandler);
 
     // Save so probe machinery can replay buffered input through it
-    _replayToHandler = handleData;
+    setReplayHandler(handleData);
   });
 }
 
-// Probe coordination state (module-level so it's shared across the event loop)
-let _probing = false;
 let _verbose = false;
-const _probingBuffer: Buffer[] = [];
-let _probeTimer: ReturnType<typeof setTimeout> | null = null;
-let _replayToHandler: ((data: Buffer) => Promise<void>) | null = null;
 
-/**
- * Schedule background probing of unmeasured characters in the current view.
- * Debounced so it only fires when the UI is quiet.
- */
 /**
  * Return pane indices in visual order (top-to-bottom, left-to-right),
  * excluding collapsed panes. Uses the layout tree's leaf order.
@@ -359,142 +354,6 @@ function cyclePane(state: AppState, direction: 1 | -1): void {
     ? 0
     : (currentIdx + direction + order.length) % order.length;
   state.focusedPane = order[nextIdx];
-}
-
-function scheduleProbe(state: AppState): void {
-  if (_probeTimer) { clearTimeout(_probeTimer); }
-  _probeTimer = setTimeout(() => runProbe(state), 400);
-}
-
-/**
- * Collect unusual characters (non-ASCII, non-Latin, etc.) from visible data
- * that haven't been probed yet. Also extracts 2-char sequences like char+VS16
- * and flag pairs that need to be probed as units.
- */
-function collectUnprobedChars(state: AppState): string[] {
-  const seen = new Set<string>();
-  const isSkinTone = (code: number) => code >= 0x1F3FB && code <= 0x1F3FF;
-  const extract = (s: string) => {
-    const cps = [...s];
-    for (let i = 0; i < cps.length; i++) {
-      const code = cps[i].codePointAt(0)!;
-      // Check for keycap sequences (1 + VS16 + U+20E3) even for ASCII base chars
-      if (i + 2 < cps.length
-          && cps[i + 1].codePointAt(0) === 0xFE0F
-          && cps[i + 2].codePointAt(0) === 0x20E3) {
-        const unit = cps[i] + cps[i + 1] + cps[i + 2];
-        if (!hasProbed(unit)) { seen.add(unit); }
-        i += 2;
-        continue;
-      }
-      if (code < 0x2000) { continue; }
-
-      // Extend over VS16, skin tone modifiers, and ZWJ+following emoji
-      let end = i + 1;
-      while (end < cps.length) {
-        const c = cps[end].codePointAt(0)!;
-        if (c === 0xFE0F || isSkinTone(c)) { end++; continue; }
-        if (c === 0x200D && end + 1 < cps.length) {
-          // ZWJ followed by another emoji (+ optional modifiers)
-          end += 2;
-          while (end < cps.length) {
-            const cc = cps[end].codePointAt(0)!;
-            if (cc === 0xFE0F || isSkinTone(cc)) { end++; continue; }
-            break;
-          }
-          continue;
-        }
-        break;
-      }
-      if (end > i + 1) {
-        const unit = cps.slice(i, end).join("");
-        if (!hasProbed(unit)) { seen.add(unit); }
-        i = end - 1;
-        continue;
-      }
-
-      // Regional indicator pair (flag): probe as a 2-char unit
-      if (code >= 0x1F1E6 && code <= 0x1F1FF && i + 1 < cps.length) {
-        const nextCode = cps[i + 1].codePointAt(0)!;
-        if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
-          const pair = cps[i] + cps[i + 1];
-          if (!hasProbed(pair)) { seen.add(pair); }
-          i++; // skip the paired RI
-          continue;
-        }
-      }
-      // Single char
-      if (!hasProbed(cps[i])) { seen.add(cps[i]); }
-    }
-  };
-  const collectFrom = (colValues: BulkColValues, rowIds: number[], cols: ColumnInfo[]) => {
-    for (const col of cols) {
-      const vals = colValues[col.colId];
-      if (!vals) { continue; }
-      for (let i = 0; i < Math.min(rowIds.length, 100); i++) {
-        const v = vals[i];
-        if (typeof v !== "string") { continue; }
-        extract(v);
-      }
-    }
-  };
-  if (state.panes.length > 0) {
-    for (const pane of state.panes) {
-      collectFrom(pane.colValues, pane.rowIds, pane.columns);
-    }
-  } else {
-    collectFrom(state.colValues, state.rowIds, state.columns);
-  }
-  return [...seen];
-}
-
-/**
- * Run the probe: measure unprobed characters in the visible data, updating
- * overrides if the terminal disagrees with string-width. If any overrides
- * change, re-render.
- */
-async function runProbe(state: AppState): Promise<void> {
-  if (_probing) { return; }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) { return; }
-  const chars = collectUnprobedChars(state);
-  if (chars.length === 0) { return; }
-
-  _probing = true;
-  try {
-    // Limit per batch to avoid long probes
-    const batch = chars.slice(0, 5);
-    // Save cursor, probes write to the status line and restore
-    process.stdout.write("\x1b[s");
-    let updated = false;
-    for (const ch of batch) {
-      const changed = await probeChar(ch);
-      if (changed) { updated = true; }
-    }
-    // Clear the last row we used and restore cursor
-    const rows = process.stdout.rows || 24;
-    process.stdout.write(`\x1b[${rows};1H\x1b[2K\x1b[u`);
-
-    if (updated) {
-      doRender(state);
-    }
-  } finally {
-    _probing = false;
-    // Replay any buffered input that arrived during probing, stripping any
-    // CPR response bytes (\x1b[<row>;<col>R) that were for the probe.
-    const buffered = _probingBuffer.splice(0);
-    if (_replayToHandler) {
-      for (const data of buffered) {
-        const str = data.toString().replace(/\x1b\[\d+;\d+R/g, "");
-        if (str.length > 0) {
-          await _replayToHandler(Buffer.from(str));
-        }
-      }
-    }
-    // Schedule another round if there are still unprobed chars
-    if (collectUnprobedChars(state).length > 0) {
-      scheduleProbe(state);
-    }
-  }
 }
 
 async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void> {
@@ -1018,98 +877,6 @@ export function appendRowToColValues(
  * Track an action group that originated from this client so we can undo it.
  * Undo actions themselves aren't pushed onto the stack -- they move the pointer.
  */
-export function handleOwnActionGroup(state: AppState, ag: { actionNum: number; actionHash: string; isUndo?: boolean; otherId?: number }): void {
-  if (!ag.actionNum || !ag.actionHash) { return; }
-  if (ag.isUndo) {
-    // Undo confirmation. executeUndo already decremented the pointer.
-    return;
-  }
-  if (_expectingRedo) {
-    // This is the confirmation of a redo we just issued. The stack already
-    // has this entry (at state.undoPointer). Just advance the pointer.
-    _expectingRedo = false;
-    if (state.undoPointer < state.undoStack.length) {
-      state.undoPointer++;
-    }
-    return;
-  }
-  // New edit: trim any redo entries (they've been invalidated) and push
-  state.undoStack = state.undoStack.slice(0, state.undoPointer);
-  state.undoStack.push({ actionNum: ag.actionNum, actionHash: ag.actionHash });
-  state.undoPointer = state.undoStack.length;
-  // Cap stack size to avoid unbounded growth
-  const MAX = 100;
-  if (state.undoStack.length > MAX) {
-    const drop = state.undoStack.length - MAX;
-    state.undoStack = state.undoStack.slice(drop);
-    state.undoPointer = state.undoStack.length;
-  }
-}
-
-async function executeUndo(state: AppState, conn: ConsoleConnection): Promise<void> {
-  // Clamp pointer defensively in case something got out of sync
-  if (state.undoPointer > state.undoStack.length) {
-    state.undoPointer = state.undoStack.length;
-  }
-  if (state.undoPointer <= 0) {
-    state.statusMessage = "Nothing to undo";
-    return;
-  }
-  const entry = state.undoStack[state.undoPointer - 1];
-  if (!entry) {
-    state.statusMessage = "Nothing to undo";
-    return;
-  }
-  try {
-    await conn.applyUserActionsById(
-      [entry.actionNum], [entry.actionHash], true, { otherId: entry.actionNum },
-    );
-    // The undo broadcast has isUndo=true so the handler doesn't touch the
-    // stack; we manage the pointer here.
-    state.undoPointer--;
-    state.statusMessage = "Undone";
-  } catch (e: any) {
-    state.statusMessage = `Undo failed: ${e.message}`;
-  }
-}
-
-async function executeRedo(state: AppState, conn: ConsoleConnection): Promise<void> {
-  if (state.undoPointer > state.undoStack.length) {
-    state.undoPointer = state.undoStack.length;
-  }
-  if (state.undoPointer >= state.undoStack.length) {
-    state.statusMessage = "Nothing to redo";
-    return;
-  }
-  const entry = state.undoStack[state.undoPointer];
-  if (!entry) {
-    state.statusMessage = "Nothing to redo";
-    return;
-  }
-  try {
-    // Mark that the next fromSelf non-undo broadcast is a redo, so the handler
-    // doesn't push a duplicate entry. The redo's docUserAction broadcast may
-    // arrive before OR after this await resolves, so we can't safely do
-    // pointer++ here -- let the handler advance the pointer.
-    _expectingRedo = true;
-    await conn.applyUserActionsById(
-      [entry.actionNum], [entry.actionHash], false, { otherId: entry.actionNum },
-    );
-    state.statusMessage = "Redone";
-  } catch (e: any) {
-    state.statusMessage = `Redo failed: ${e.message}`;
-    _expectingRedo = false;
-  }
-}
-
-// Module flag used by handleOwnActionGroup to differentiate a redo broadcast
-// (which shouldn't add to the stack -- just advance the pointer) from a fresh
-// edit (which should trim and push).
-let _expectingRedo = false;
-
-/** Test-only: set _expectingRedo to simulate the executeRedo path. */
-export function _setExpectingRedo(v: boolean): void { _expectingRedo = v; }
-
 function doRender(state: AppState): void {
   process.stdout.write(render(state));
 }
@@ -1144,66 +911,6 @@ function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void
  * predicted, along with terminal identification. Useful for reporting
  * upstream or to the string-width maintainers.
  */
-function printWidthReport(): void {
-  const report = getWidthReport();
-  const inTmux = !!process.env.TMUX || (process.env.TERM || "").startsWith("screen") || (process.env.TERM || "").startsWith("tmux");
-  const inScreen = !!process.env.STY;
-  process.stderr.write("\n--- Terminal emoji width report ---\n");
-  process.stderr.write("Environment:\n");
-  for (const key of ["TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
-                     "LC_TERMINAL", "LC_TERMINAL_VERSION", "VTE_VERSION",
-                     "KITTY_WINDOW_ID", "WEZTERM_VERSION", "WT_SESSION",
-                     "TMUX", "STY"]) {
-    if (process.env[key]) {
-      process.stderr.write(`  ${key}=${process.env[key]}\n`);
-    }
-  }
-  if (report.daResponse) {
-    const esc = report.daResponse.replace(/\x1b/g, "ESC");
-    process.stderr.write(`  DA response: ${esc}\n`);
-  }
-  if (report.da2Response) {
-    const esc = report.da2Response.replace(/\x1b/g, "ESC");
-    process.stderr.write(`  DA2 response: ${esc}\n`);
-  }
-  const m2027 = getMode2027Status();
-  process.stderr.write(`  Mode 2027 (grapheme-cluster widths): ${m2027.status}${m2027.enabled ? " (enabled)" : ""}\n`);
-
-  if (inTmux || inScreen) {
-    const mux = inTmux ? "tmux" : "screen";
-    process.stderr.write(`\nNOTE: running inside ${mux}. Cursor-position (CPR) responses reflect\n`);
-    process.stderr.write(`${mux}'s width calculation, NOT the host terminal's actual rendering.\n`);
-    process.stderr.write(`${mux} does not currently speak mode 2027, so width mismatches between\n`);
-    process.stderr.write(`${mux} and the host terminal's font can cause visual misalignment that\n`);
-    process.stderr.write(`this tool cannot detect or correct.\n`);
-    if (inTmux) {
-      process.stderr.write(`Options:\n`);
-      process.stderr.write(`  * Run outside tmux to let this tool probe the host terminal directly.\n`);
-      process.stderr.write(`  * Upgrade to tmux 3.6+ and try these options:\n`);
-      process.stderr.write(`      set -g variation-selector-always-wide on\n`);
-      process.stderr.write(`      set -g codepoint-widths "U+XXXX=2,..." (for specific problem chars)\n`);
-      process.stderr.write(`  * Build tmux with --enable-utf8proc for better Unicode handling.\n`);
-    }
-  }
-
-  if (report.overrides.length === 0) {
-    process.stderr.write("\nNo width mismatches detected.\n");
-  } else {
-    process.stderr.write(`\n${report.overrides.length} character(s) rendered differently than string-width predicted:\n`);
-    for (const o of report.overrides) {
-      process.stderr.write(`  ${o.char}  ${o.codepoints}  expected=${o.expected}  actual=${o.actual}\n`);
-    }
-  }
-
-  if (report.flagPairDelta !== 0) {
-    process.stderr.write(`\nFlag pair delta: ${report.flagPairDelta > 0 ? "+" : ""}${report.flagPairDelta} (all flag emoji render ${report.flagPairDelta > 0 ? "wider" : "narrower"} than predicted)\n`);
-  }
-  if (report.vs16Delta !== 0) {
-    process.stderr.write(`VS16 delta: ${report.vs16Delta > 0 ? "+" : ""}${report.vs16Delta} (char+VS16 sequences render ${report.vs16Delta > 0 ? "wider" : "narrower"} than predicted)\n`);
-  }
-  process.stderr.write("--- end ---\n");
-}
-
 /**
  * Apply incoming DocActions to local state for live updates.
  */
