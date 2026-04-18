@@ -1,8 +1,7 @@
 import { AppState, isCardPane, PaneState, activeView, editReturnMode } from "./ConsoleAppState.js";
 import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
-import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
+import { collectLeaves, computeColLayout, LayoutNode } from "./ConsoleLayout.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
-import { computeColLayout } from "./ConsoleRenderer.js";
 
 /**
  * Ensure scrollCol is adjusted so cursorCol is visible.

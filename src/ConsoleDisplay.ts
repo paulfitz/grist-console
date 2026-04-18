@@ -22,6 +22,11 @@ export const HIDE_CURSOR = `${ESC}?25l`;
 export const SHOW_CURSOR = `${ESC}?25h`;
 export const ENTER_ALT_SCREEN = `${ESC}?1049h`;
 export const EXIT_ALT_SCREEN = `${ESC}?1049l`;
+// DEC private mode 2026: synchronized output. Supporting terminals hold
+// the visible buffer between BEGIN and END so frames paint atomically;
+// non-supporting terminals ignore the unknown escape.
+export const SYNC_BEGIN = `${ESC}?2026h`;
+export const SYNC_END = `${ESC}?2026l`;
 export const ANSI_RESET = "\x1b[0m";
 
 /**

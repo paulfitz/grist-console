@@ -7,6 +7,7 @@ import {
 } from "./ConsoleDisplay.js";
 import { AppState, PaneState, activeView } from "./ConsoleAppState.js";
 import { renderMultiPane } from "./ConsoleMultiPane.js";
+import { computeColLayout } from "./ConsoleLayout.js";
 import { renderGoatOverlay, goatStatus } from "./GoatAnimation.js";
 import { isGoatTheme } from "./ConsoleTheme.js";
 
@@ -21,33 +22,6 @@ function screenPreamble(t: Theme): string {
   return HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 }
 
-interface ColLayout {
-  colId: string;
-  label: string;
-  width: number;
-}
-
-/**
- * Compute column widths based on header labels and sampled data.
- * Shared by the grid renderer and ConsoleInput's cursor-visibility logic.
- */
-export function computeColLayout(pane: PaneState): ColLayout[] {
-  const maxWidth = 30;
-  const minWidth = 4;
-  return pane.columns.map((col) => {
-    let width = displayWidth(col.label);
-    const values = pane.colValues[col.colId];
-    if (values) {
-      const sampleSize = Math.min(values.length, 100);
-      for (let i = 0; i < sampleSize; i++) {
-        const formatted = flattenToLine(formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues));
-        width = Math.max(width, displayWidth(formatted));
-      }
-    }
-    width = Math.max(minWidth, Math.min(maxWidth, width));
-    return { colId: col.colId, label: col.label, width };
-  });
-}
 
 /**
  * Get the status line content: show full cell value if the current cell is truncated,

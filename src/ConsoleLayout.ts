@@ -1,4 +1,37 @@
 import { ColumnInfo } from "./types.js";
+import { PaneState } from "./ConsoleAppState.js";
+import { formatCellValue } from "./ConsoleCellFormat.js";
+import { displayWidth, flattenToLine } from "./ConsoleDisplay.js";
+
+export interface ColLayout {
+  colId: string;
+  label: string;
+  width: number;
+}
+
+/**
+ * Compute column widths from header labels and sampled data. Shared by
+ * the grid renderer, multi-pane composition, cursor-visibility logic,
+ * and the goat's cursor-overlap check -- all need to agree on where
+ * each column sits on screen.
+ */
+export function computeColLayout(pane: PaneState): ColLayout[] {
+  const maxWidth = 30;
+  const minWidth = 4;
+  return pane.columns.map((col) => {
+    let width = displayWidth(col.label);
+    const values = pane.colValues[col.colId];
+    if (values) {
+      const sampleSize = Math.min(values.length, 100);
+      for (let i = 0; i < sampleSize; i++) {
+        const formatted = flattenToLine(formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues));
+        width = Math.max(width, displayWidth(formatted));
+      }
+    }
+    width = Math.max(minWidth, Math.min(maxWidth, width));
+    return { colId: col.colId, label: col.label, width };
+  });
+}
 
 /**
  * Schemas for the Grist meta tables we read. Each value is the columnar

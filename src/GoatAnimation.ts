@@ -1,47 +1,54 @@
 /**
- * A goat wanders around the focused grid pane, munching on cells it
- * passes. It avoids the user's cursor cell -- politely nibbles
- * elsewhere. Leaves a three-step fading trail of grazed grass behind it.
- *
- * State is module-level; the goat lives across renders until the theme
- * changes or the user leaves grid mode. A timer in ConsoleMain advances
- * the goat every ~1500ms.
+ * A goat ambles horizontally along the focused pane, bouncing off the
+ * left and right edges. Pops a bigger jgs sprite when the pane is tall
+ * enough; otherwise a compact walker. A timer in ConsoleMain advances
+ * the goat every ~900ms.
  */
 
 import { AppState, PaneState } from "./ConsoleAppState.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
-import { flattenToLine, MOVE_TO } from "./ConsoleDisplay.js";
-import { collectLeaves } from "./ConsoleLayout.js";
-
-interface GoatPos {
-  paneIdx: number;
-  rowIdx: number;
-  colIdx: number;
-}
+import { ANSI_RESET, displayWidth, flattenToLine, hexToAnsi, MOVE_TO, stripAnsi } from "./ConsoleDisplay.js";
+import { collectLeaves, computeColLayout } from "./ConsoleLayout.js";
+import { Theme } from "./ConsoleTheme.js";
 
 type GoatDir = "left" | "right";
 
-interface GoatState extends GoatPos {
-  /** Oldest trail cell is last; newest first. */
-  trail: GoatPos[];
+interface GoatState {
+  paneIdx: number;
+  /** Horizontal cell offset from the pane's left edge. Walk bounces in [0, walkMax]. */
+  x: number;
+  /** Facing direction; follows the walk. */
+  dir: GoatDir;
   /** Step counter -- drives the animation frame cycle. */
   frame: number;
-  /** What the goat is currently eating, as a short display string. */
-  snack: string;
-  /** Running tally of cells the goat has visited. */
+  /** Running tally of steps taken (munches). */
   munchCount: number;
-  /** Which way is the goat facing? Flips when it moves horizontally. */
-  dir: GoatDir;
+  /** Column the goat is peeking at (for the status line). */
+  colIdx: number;
+  /** Cell content near the peek, for flavor text. */
+  snack: string;
 }
 
-const MAX_TRAIL = 3;
+// Ambles this many cells per step. Big enough to be visibly moving,
+// small enough not to teleport.
+const WALK_STEP = 3;
+
+// Cushion kept between the goat's far edge and the cursor column when
+// the goat scurries past. A few cells so the sprite clearly clears the
+// cursor cell rather than straddling its neighbour.
+const SCURRY_GAP = 4;
+
+// White background + black foreground, so the goat stands out as a
+// light patch against any theme background. 24-bit truecolor; terminals
+// without truecolor fall back to the default SGR (still legible).
+const GOAT_STYLE = hexToAnsi("#FFFFFF", true) + hexToAnsi("#000000", false);
 
 // ---------------------------------------------------------------------------
 // Big goat -- Joan Stark's 12/96 goat.cow, used verbatim when the terminal is
-// tall enough. The face is at the upper-left, the back arches right with a
-// grazing grass arc (~^~^~^), legs reach down to a grass line (""...). No
-// cell-wandering in this mode: the goat is anchored at the pane bottom and
-// the two frames only nudge the jaw for a subtle chew.
+// tall enough. Head/eyes are at the upper-LEFT and the tail (`\_}`) is far
+// right, so this sprite FACES LEFT. The right-facing variant is derived by
+// mirroring (see BIG_FRAMES_RIGHT below). Two frames animate a subtle
+// jaw-chew; the goat ambles horizontally via _goat.x in stepGoat.
 // ---------------------------------------------------------------------------
 const BIG_FRAMES: string[][] = [
   // Frame A -- original, jaw closed
@@ -91,11 +98,9 @@ const BIG_FRAMES: string[][] = [
 const BIG_HEIGHT = BIG_FRAMES[0].length;
 const BIG_WIDTH = Math.max(...BIG_FRAMES[0].map(l => l.length));
 
-/**
- * Mirror a sprite line for a left-facing version. Reverses the characters
- * and swaps each directional glyph (`/`↔`\`, `(`↔`)`, `<`↔`>`, etc.).
- * Leaves symmetrical chars (`~`, `^`, `_`, `-`, `|`, `"`, `'`) untouched.
- */
+// Pad every line to the frame's max width before reversing -- otherwise
+// lines of different lengths reverse around their own center and break
+// vertical alignment between rows (e.g. horns drift off the head).
 const MIRROR_MAP: Record<string, string> = {
   "/": "\\", "\\": "/",
   "(": ")", ")": "(",
@@ -104,10 +109,14 @@ const MIRROR_MAP: Record<string, string> = {
   "[": "]", "]": "[",
   "`": "'", "'": "`",
 };
-function mirrorLine(line: string): string {
-  return [...line].reverse().map(c => MIRROR_MAP[c] ?? c).join("");
+function mirrorFrame(frame: string[]): string[] {
+  const maxW = Math.max(...frame.map(l => l.length));
+  return frame.map(line => {
+    const padded = line.padEnd(maxW, " ");
+    return [...padded].reverse().map(c => MIRROR_MAP[c] ?? c).join("");
+  });
 }
-const BIG_FRAMES_LEFT: string[][] = BIG_FRAMES.map(frame => frame.map(mirrorLine));
+const BIG_FRAMES_RIGHT: string[][] = BIG_FRAMES.map(mirrorFrame);
 
 // Pane must have at least this many visible data rows to show the big goat.
 // Otherwise we fall back to the compact sprite.
@@ -119,7 +128,7 @@ const BIG_MIN_ROWS = BIG_HEIGHT + 4;
 // arches) AND small ears above the face. Walk / walk / graze cycle; left
 // and right facing variants.
 // ---------------------------------------------------------------------------
-const COMPACT_FRAMES_RIGHT: string[][] = [
+const COMPACT_FRAMES_LEFT: string[][] = [
   // Walk, legs spread
   [
     "   ))_((  ",
@@ -145,35 +154,11 @@ const COMPACT_FRAMES_RIGHT: string[][] = [
     "    \"       \"",
   ],
 ];
-const COMPACT_FRAMES_LEFT: string[][] = [
-  [
-    "   ))_((  ",
-    "__/^0 0^\\  ",
-    "  /    \\_/",
-    "  || / \\  ",
-    "  \"\"  \" \" ",
-  ],
-  [
-    "   ))_((  ",
-    "__/^0 0^\\  ",
-    "  /    \\_/",
-    "  || \\ /  ",
-    "  \"\"   \"  ",
-  ],
-  [
-    "     ))_((  ",
-    "  __/^o o^\\ ",
-    "_/    \\_/   ",
-    "\\~~~~~~~\\   ",
-    "\"       \"   ",
-  ],
-];
-const COMPACT_ROWS = COMPACT_FRAMES_RIGHT[0].length;
-// A full cycle is walk / walk / graze, so frame 2 of every 3 is the graze.
-const GRAZE_FRAME_MOD = 3;
-
-// Trail: a small flower at cells the goat was recently on.
-const TRAIL_CHARS = [",*,", ".o.", " . "];
+// Derive the right-facing frames by mirroring the left-facing source
+// so the two stay in lockstep when the source is edited.
+const COMPACT_FRAMES_RIGHT: string[][] = COMPACT_FRAMES_LEFT.map(mirrorFrame);
+const COMPACT_WIDTH = Math.max(...COMPACT_FRAMES_LEFT[0].map(l => l.length));
+const COMPACT_HEIGHT = COMPACT_FRAMES_LEFT[0].length;
 
 // The goat is a ruminant of many moods. Cycles per step, never two in a row.
 const MUNCH_VERBS = [
@@ -190,10 +175,10 @@ export function resetGoat(): void { _goat = null; }
 export function getGoat(): Readonly<GoatState> | null { return _goat; }
 
 /**
- * Advance the goat one step: prefer a random adjacent cell within the
- * focused pane, avoiding the user's cursor. Falls back to a random
- * teleport if boxed in. Records a fading trail of the last positions.
- * Returns true if a render-visible change happened.
+ * Advance the goat one step along its horizontal walk, bouncing at the
+ * pane edges. Sprite size (big / compact) is a pane-size heuristic; the
+ * walk itself is identical either way. Returns true if a render-visible
+ * change happened.
  */
 export function stepGoat(state: AppState): boolean {
   const paneIdx = state.focusedPane;
@@ -203,114 +188,344 @@ export function stepGoat(state: AppState): boolean {
     return false;
   }
 
-  // Keep the goat in the window the user can actually see. Without this,
-  // on a 500-row table most placements land below the scroll and the
-  // overlay silently clips them -- the user never sees the goat.
-  // Slightly pessimistic guess for visible height: terminal rows minus
-  // header/footer/chrome. Also leave a bottom margin so the 4-row
-  // sprite doesn't get clipped against the footer.
-  const termRows = process.stdout.rows || 24;
-  const visibleRows = Math.max(1, termRows - 6 - (COMPACT_ROWS - 1));
-  const rowLow = pane.scrollRow;
-  const rowHigh = Math.min(pane.rowIds.length, pane.scrollRow + visibleRows);
-  const colLow = pane.scrollCol;
-  // Assume the user can scan ~10 columns at a time; narrower if pane is small.
-  const colHigh = Math.min(pane.columns.length, pane.scrollCol + 10);
+  // Resolve the pane's actual rectangle so the walk bounces at the
+  // right-hand edge. Fall back to terminal size when layout is absent
+  // (tests, fresh startup before first layout pass).
+  const leaf = state.layout ? collectLeaves(state.layout).find(l => l.paneIndex === paneIdx) : null;
+  const leafWidth = leaf ? leaf.width : (process.stdout.columns || 80);
+  const leafHeight = leaf ? leaf.height : (process.stdout.rows || 24);
+  const sprite = spriteDimsFor(leafWidth, leafHeight);
+  const walkMax = Math.max(0, leafWidth - sprite.width - 2);
 
-  const cursorR = pane.cursorRow;
-  const cursorC = pane.cursorCol;
+  // Reset on pane change so the goat starts at the left edge, heading right.
+  const carryover = _goat && _goat.paneIdx === paneIdx;
+  let x = carryover ? _goat!.x : 0;
+  let dir: GoatDir = carryover ? _goat!.dir : "right";
+  x += dir === "right" ? WALK_STEP : -WALK_STEP;
+  if (x >= walkMax) { x = walkMax; dir = "left"; }
+  else if (x <= 0) { x = 0; dir = "right"; }
 
-  const carryTrail = _goat && _goat.paneIdx === paneIdx
-    ? [{ paneIdx: _goat.paneIdx, rowIdx: _goat.rowIdx, colIdx: _goat.colIdx },
-       ..._goat.trail].slice(0, MAX_TRAIL)
-    : [];
+  // Scurry: leap past the cursor in the current walk direction if the
+  // goat's sprite would cover the cursor cell. Uses exact screen-column
+  // math (same sources as the renderer) so the check agrees with what
+  // the user actually sees.
+  const scurryX = scurryAround(pane, state.theme, leafWidth, leafHeight, sprite, x, dir, walkMax);
+  if (scurryX !== null) { x = scurryX; }
 
-  // The sprite is COMPACT_ROWS tall, so it extends down from the anchor
-  // cell. Reject positions whose row band would cover the cursor row,
-  // so the goat never obscures what the user is working on.
-  const overlapsCursor = (r: number, c: number) =>
-    cursorR >= r && cursorR < r + COMPACT_ROWS && c === cursorC;
-
-  const pickTeleport = (): GoatPos => {
-    const rowRange = Math.max(1, rowHigh - rowLow);
-    const colRange = Math.max(1, colHigh - colLow);
-    let r: number, c: number;
-    let tries = 0;
-    do {
-      r = rowLow + Math.floor(Math.random() * rowRange);
-      c = colLow + Math.floor(Math.random() * colRange);
-      tries++;
-    } while (overlapsCursor(r, c) && tries < 20);
-    return { paneIdx, rowIdx: r, colIdx: c };
-  };
-
-  // Is the existing goat still inside the visible window? If the user
-  // scrolled, the old position may now be off-screen -- teleport to a
-  // fresh spot in the visible range rather than wandering from it.
-  const goatVisible = _goat && _goat.paneIdx === paneIdx
-    && _goat.rowIdx >= rowLow && _goat.rowIdx < rowHigh
-    && _goat.colIdx >= colLow && _goat.colIdx < colHigh;
-
-  let next: GoatPos;
-  if (!goatVisible) {
-    next = pickTeleport();
-  } else {
-    // Try to wander to a random adjacent cell (4-neighbourhood), avoiding
-    // cursor and staying within the visible window.
-    const dirs: Array<[number, number]> = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-    for (let i = dirs.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
-    }
-    next = pickTeleport(); // default if no neighbour works
-    for (const [dr, dc] of dirs) {
-      const nr = _goat!.rowIdx + dr;
-      const nc = _goat!.colIdx + dc;
-      if (nr < rowLow || nr >= rowHigh || nc < colLow || nc >= colHigh) { continue; }
-      if (overlapsCursor(nr, nc)) { continue; }
-      next = { paneIdx, rowIdx: nr, colIdx: nc };
-      break;
-    }
-  }
-
-  // What's the goat munching? Pull the cell value for status-bar commentary.
-  const col = pane.columns[next.colIdx];
-  const raw = col ? pane.colValues[col.colId]?.[next.rowIdx] : null;
+  // Snack + colIdx: peek at a random visible column for flavor text.
+  // The goat's face doesn't land on a specific cell (it floats in pixel
+  // space), so a random column is close enough -- and keeps the status
+  // line varied turn-to-turn.
+  const visCols = Math.max(1, pane.columns.length - pane.scrollCol);
+  const colIdx = pane.scrollCol + Math.floor(Math.random() * visCols);
+  const rowIdx = Math.min(pane.rowIds.length - 1, pane.scrollRow);
+  const col = pane.columns[colIdx];
+  const raw = col ? pane.colValues[col.colId]?.[rowIdx] : null;
   const text = col ? flattenToLine(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues)) : "";
   const snack = text ? text.slice(0, 20) : "(empty)";
 
-  // Infer the goat's facing direction from the horizontal move. Vertical
-  // moves and teleports preserve the previous direction. Once in a while
-  // the goat idly glances the other way (about 1 step in 6), so even the
-  // stationary big-goat mode still flips occasionally.
-  let dir: GoatDir = _goat?.dir ?? "right";
-  if (_goat && _goat.paneIdx === paneIdx) {
-    if (next.colIdx > _goat.colIdx) { dir = "right"; }
-    else if (next.colIdx < _goat.colIdx) { dir = "left"; }
-  }
-  const WHIM_FLIP_P = 0.15;
-  if (Math.random() < WHIM_FLIP_P) { dir = dir === "left" ? "right" : "left"; }
-
   _goat = {
-    ...next,
-    trail: carryTrail,
-    frame: (_goat?.frame ?? 0) + 1,
-    snack,
-    munchCount: (_goat?.munchCount ?? 0) + 1,
+    paneIdx,
+    x,
     dir,
+    frame: (_goat?.frame ?? 0) + 1,
+    munchCount: (_goat?.munchCount ?? 0) + 1,
+    colIdx,
+    snack,
   };
   return true;
 }
 
 /**
- * Compute the screen-space output that overlays the goat sprite on top of
- * the already-rendered frame, at the goat's current cell. Also overlays
- * small trail markers at the goat's recently-visited cells. Caller
- * appends the result to the render output; the sprite is positioned via
- * MOVE_TO so it doesn't care about underlying cell widths.
+ * Big sprite when the pane is tall and wide enough; compact otherwise.
+ * Used by both the walk-bounds calc in stepGoat and the sprite pick in
+ * renderGoatOverlay so the two agree.
+ */
+function spriteDimsFor(leafWidth: number, leafHeight: number): { width: number; height: number } {
+  // Dataframe rows = leafHeight minus headers/footers/status, roughly.
+  const approxDataRows = Math.max(0, leafHeight - 5);
+  return (approxDataRows >= BIG_MIN_ROWS && leafWidth >= BIG_WIDTH + 2)
+    ? { width: BIG_WIDTH, height: BIG_HEIGHT }
+    : { width: COMPACT_WIDTH, height: COMPACT_HEIGHT };
+}
+
+/**
+ * If the goat's sprite would land on top of the cursor cell, return a
+ * new x that leaps past the cursor (in the current walk direction) with
+ * a SCURRY_GAP cushion. Returns null if no overlap or no room to dart.
  *
- * Returns "" if there's no goat, no layout, or the goat's pane is the
- * overlay pane (overlay uses the full screen and has its own code path).
+ * All coordinates are offsets from the pane's leafLeft / leafTop.
+ * Horizontal math uses real column widths and the row-number gutter so
+ * the scurry trigger matches what the user sees.
+ */
+function scurryAround(
+  pane: PaneState,
+  theme: Theme,
+  leafWidth: number,
+  leafHeight: number,
+  sprite: { width: number; height: number },
+  x: number,
+  dir: GoatDir,
+  walkMax: number,
+): number | null {
+  if (walkMax <= 0) { return null; }
+
+  // Vertical: does the cursor row fall inside the sprite's row band?
+  // Sprite anchor mirrors renderGoatOverlay's logic (bottom by default,
+  // top if the cursor is in the lower half of visible rows).
+  const headerRows = theme.headerSepLine ? 3 : 2;
+  const dataRows = Math.max(0, leafHeight - headerRows);
+  const cursorRel = pane.cursorRow - pane.scrollRow;
+  if (cursorRel < 0 || cursorRel >= dataRows) { return null; }
+  const anchorAtTop = cursorRel > dataRows / 2;
+  const spriteTop = anchorAtTop ? headerRows : leafHeight - sprite.height;
+  const cursorRow = headerRows + cursorRel;
+  if (cursorRow < spriteTop || cursorRow >= spriteTop + sprite.height) { return null; }
+
+  // Horizontal: cursor cell's screen-column span relative to leafLeft.
+  const cols = computeColLayout(pane);
+  if (pane.cursorCol < 0 || pane.cursorCol >= cols.length) { return null; }
+  const sepLen = theme.colSeparator.length;
+  const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
+  const rowNumWidth = Math.max(3, String(maxRowId).length);
+  let cursorLeft = rowNumWidth;
+  for (let c = pane.scrollCol; c < pane.cursorCol; c++) {
+    cursorLeft += sepLen + cols[c].width;
+  }
+  cursorLeft += sepLen;
+  const cursorRight = cursorLeft + cols[pane.cursorCol].width;
+
+  // Goat sprite spans [x+1, x+1+width) in the same leafLeft-relative frame.
+  const goatLeft = x + 1;
+  const goatRight = x + 1 + sprite.width;
+  if (cursorLeft >= goatRight || goatLeft >= cursorRight) { return null; }
+
+  // Dart past the cursor in the current direction.
+  return dir === "right"
+    ? Math.min(walkMax, cursorRight + SCURRY_GAP - 1)
+    : Math.max(0, cursorLeft - SCURRY_GAP - sprite.width - 1);
+}
+
+/**
+ * Shared placement math: where does the sprite land in the pane's
+ * coordinate frame (row 0 = leaf.top, col 0 = leaf.left)? Returns null
+ * if the goat shouldn't render here (no goat, wrong pane type, no
+ * layout match).
+ *
+ * `paneTop` is the caller's coordinate frame for the pane's top row.
+ * Multi-pane's 2D buffer uses `leaf.top` directly; the screen-coord
+ * overlay adds trayHeight.
+ */
+interface GoatPlacement {
+  frame: string[];
+  firstRow: number;    // first row in the caller's frame
+  anchorCol: number;   // first col in the caller's frame
+  clipTop: number;     // rows < clipTop are outside the pane
+  clipBottom: number;  // rows >= clipBottom are outside the pane
+  clipRight: number;   // cols >= clipRight are outside the pane
+  leafLeft: number;    // pane's left col (buffer splice location)
+}
+function computeGoatPlacement(
+  state: AppState,
+  paneTop: number,
+  fallbackHeight: number,
+  fallbackWidth: number,
+): GoatPlacement | null {
+  if (!_goat) { return null; }
+  const pane = state.panes[_goat.paneIdx];
+  if (!pane) { return null; }
+  const pk = pane.sectionInfo?.parentKey;
+  if (pk === "single" || pk === "detail" || pk === "chart") { return null; }
+
+  let leafTop = paneTop;
+  let leafLeft = 0;
+  let leafWidth = fallbackWidth;
+  let leafHeight = fallbackHeight;
+  if (state.layout) {
+    const leaf = collectLeaves(state.layout).find(l => l.paneIndex === _goat!.paneIdx);
+    if (!leaf) { return null; }
+    leafTop = leaf.top + paneTop;
+    leafLeft = leaf.left;
+    leafWidth = leaf.width;
+    leafHeight = leaf.height;
+  }
+
+  const t = state.theme;
+  const headerRows = t.headerSepLine ? 3 : 2;
+  const dataRows = Math.max(0, leafHeight - headerRows);
+
+  const sprite = spriteDimsFor(leafWidth, leafHeight);
+  const useBig = sprite.width === BIG_WIDTH;
+  // BIG_FRAMES / COMPACT_FRAMES_LEFT (source) face LEFT; *_RIGHT mirrors face right.
+  const frameSet = useBig
+    ? (_goat.dir === "left" ? BIG_FRAMES : BIG_FRAMES_RIGHT)
+    : (_goat.dir === "left" ? COMPACT_FRAMES_LEFT : COMPACT_FRAMES_RIGHT);
+  const frame = frameSet[_goat.frame % frameSet.length];
+
+  // Anchor: bottom by default; top if the cursor is in the lower half
+  // of the visible rows, so the goat never covers the cell in use.
+  const cursorRel = pane.cursorRow - pane.scrollRow;
+  const anchorAtTop = cursorRel > dataRows / 2;
+  const firstRow = anchorAtTop
+    ? leafTop + headerRows
+    : leafTop + leafHeight - frame.length;
+
+  const walkMax = Math.max(0, leafWidth - sprite.width - 2);
+  const x = Math.max(0, Math.min(walkMax, _goat.x));
+  const anchorCol = leafLeft + 1 + x;
+
+  return {
+    frame,
+    firstRow,
+    anchorCol,
+    clipTop: leafTop + headerRows,
+    clipBottom: leafTop + leafHeight,
+    clipRight: leafLeft + leafWidth,
+    leafLeft,
+  };
+}
+
+/**
+ * Paint the goat sprite INTO the multi-pane 2D character buffer by
+ * splicing goat characters into the pane's packed line (one cell per
+ * pane row contains the full ANSI-wrapped line, the rest are empty).
+ * Splicing preserves the surrounding SGR state so the line's coloring
+ * resumes correctly after the goat.
+ *
+ * Doing this before the buffer flushes means each line hits the
+ * terminal already containing the goat -- no "grid cleared, then goat
+ * repainted" flash on terminals without DEC 2026.
+ */
+export function paintGoatIntoBuffer(state: AppState, buf: string[][], termCols: number): void {
+  const placement = computeGoatPlacement(state, 0, buf.length, termCols);
+  if (!placement) { return; }
+  const { frame, firstRow, anchorCol, clipTop, clipBottom, clipRight, leafLeft } = placement;
+
+  for (let r = 0; r < frame.length; r++) {
+    const row = firstRow + r;
+    if (row < clipTop || row >= clipBottom) { continue; }
+    if (row < 0 || row >= buf.length) { continue; }
+    const line = frame[r];
+    const lineMax = Math.max(0, clipRight - anchorCol - 1);
+    const end = Math.min(line.length, lineMax);
+    // Body span: first and last non-space columns in this sprite row.
+    let left = -1;
+    let right = -1;
+    for (let i = 0; i < end; i++) {
+      if (line[i] !== " ") {
+        if (left < 0) { left = i; }
+        right = i;
+      }
+    }
+    if (left < 0) { continue; }
+
+    // Splice the goat body span into the pane's packed-line cell
+    // (writeToBuffer contract: row content lives at buf[row][leafLeft],
+    // neighbors are ""). If the row has no packed content yet -- blank
+    // data rows below the last row, or rows the pane renderer skipped
+    // -- synthesise one so the goat still shows.
+    const packed = buf[row][leafLeft] ?? "";
+    const goatBody = line.slice(left, right + 1);
+    const goatStartInLine = anchorCol + left - leafLeft;
+    const paneWidth = clipRight - leafLeft;
+
+    const visibleWidth = displayWidth(stripAnsi(packed));
+    if (visibleWidth < goatStartInLine + goatBody.length) {
+      // Build a fresh blank line with the goat embedded, then enforce
+      // writeToBuffer's one-cell-per-row convention so the join works.
+      const leftFill = " ".repeat(Math.max(0, goatStartInLine - visibleWidth));
+      const rightFill = " ".repeat(Math.max(0, paneWidth - goatStartInLine - goatBody.length));
+      buf[row][leafLeft] = packed + leftFill
+        + GOAT_STYLE + goatBody + ANSI_RESET
+        + rightFill;
+      for (let c = leafLeft + 1; c < Math.min(leafLeft + paneWidth, buf[row].length); c++) {
+        buf[row][c] = "";
+      }
+      continue;
+    }
+
+    buf[row][leafLeft] = spliceGoatIntoPackedLine(packed, goatStartInLine, goatBody);
+  }
+}
+
+/**
+ * Insert `goatBody` into `line` starting at visual column `visualStart`
+ * (measured from the line's own leftmost visible char). Walks the line
+ * in codepoint units and uses displayWidth to advance the visual
+ * column, so wide glyphs (emoji, CJK) don't desync the splice.
+ *
+ * Tracks the SGR state accumulated up to the splice point and re-emits
+ * it after the goat so the line's remaining content keeps its color.
+ * When the splice boundary falls inside a wide glyph we bias towards
+ * preserving alignment: the pre-splice walk stops BEFORE a glyph that
+ * would overshoot (so we may start 1 cell early), and the post-splice
+ * walk consumes greedily (so we may eat 1 extra cell). Space padding
+ * before / after the goat keeps the replaced width equal to what we
+ * consumed, so every cell past the goat stays in its column.
+ */
+function spliceGoatIntoPackedLine(line: string, visualStart: number, goatBody: string): string {
+  const goatWidth = goatBody.length;
+  let visual = 0;
+  let i = 0;
+  let active = "";
+
+  // Walk to the splice start. Stop BEFORE a glyph that would overshoot.
+  while (i < line.length && visual < visualStart) {
+    if (line[i] === "\x1b" && line[i + 1] === "[") {
+      const endIdx = line.indexOf("m", i);
+      if (endIdx < 0) { return line; }
+      const sgr = line.slice(i, endIdx + 1);
+      active = sgr === "\x1b[0m" ? "" : active + sgr;
+      i = endIdx + 1;
+      continue;
+    }
+    const cp = line.codePointAt(i)!;
+    const charLen = cp > 0xFFFF ? 2 : 1;
+    const w = displayWidth(line.slice(i, i + charLen));
+    if (visual + w > visualStart) { break; }
+    visual += w;
+    i += charLen;
+  }
+  const pos1 = i;
+  const visualAtPos1 = visual;
+
+  // Skip the region the goat replaces. Consume greedily so a glyph
+  // straddling the right boundary is eaten whole.
+  while (i < line.length && visual < visualStart + goatWidth) {
+    if (line[i] === "\x1b" && line[i + 1] === "[") {
+      const endIdx = line.indexOf("m", i);
+      if (endIdx < 0) { return line; }
+      const sgr = line.slice(i, endIdx + 1);
+      active = sgr === "\x1b[0m" ? "" : active + sgr;
+      i = endIdx + 1;
+      continue;
+    }
+    const cp = line.codePointAt(i)!;
+    const charLen = cp > 0xFFFF ? 2 : 1;
+    visual += displayWidth(line.slice(i, i + charLen));
+    i += charLen;
+  }
+  const pos2 = i;
+
+  // Ran out of visible columns before reaching the splice -- nothing to do.
+  if (pos1 === line.length && visualStart > 0) { return line; }
+
+  // Pad to keep the replaced visual width equal to what we consumed.
+  const leftPad = " ".repeat(Math.max(0, visualStart - visualAtPos1));
+  const rightPad = " ".repeat(Math.max(0, visual - visualStart - goatWidth));
+
+  return line.slice(0, pos1)
+    + GOAT_STYLE + leftPad + goatBody + rightPad + ANSI_RESET
+    + active
+    + line.slice(pos2);
+}
+
+/**
+ * Emit the goat as an ANSI overlay appended to already-rendered output.
+ * Used by the single-pane renderer (which doesn't build a 2D buffer).
+ * Prefer `paintGoatIntoBuffer` when a buffer is available -- it avoids
+ * the grid-cleared-then-goat-repainted flash on non-synchronised
+ * terminals.
  */
 export function renderGoatOverlay(
   state: AppState,
@@ -318,170 +533,41 @@ export function renderGoatOverlay(
   termRows: number,
   termCols: number,
 ): string {
-  if (!_goat) { return ""; }
-  const pane = state.panes[_goat.paneIdx];
-  if (!pane) { return ""; }
-  // Card panes (single / detail) lay out vertically with no column
-  // header row, so the overlay's grid-based math lands in the wrong
-  // place. Skip them entirely.
-  const pk = pane.sectionInfo?.parentKey;
-  if (pk === "single" || pk === "detail" || pk === "chart") { return ""; }
+  const placement = computeGoatPlacement(state, trayHeight, termRows - 2 - trayHeight, termCols);
+  if (!placement) { return ""; }
+  const { frame, firstRow, anchorCol, clipTop, clipBottom, clipRight } = placement;
 
-  // Resolve the pane's screen rectangle (leaf) and the column layout.
-  let leafTop = trayHeight;
-  let leafLeft = 0;
-  let leafWidth = termCols;
-  let leafHeight = termRows - 2 - trayHeight;
-  if (state.layout) {
-    const leaf = collectLeaves(state.layout).find(l => l.paneIndex === _goat!.paneIdx);
-    if (!leaf) { return ""; }
-    leafTop = leaf.top + trayHeight;
-    leafLeft = leaf.left;
-    leafWidth = leaf.width;
-    leafHeight = leaf.height;
-  }
-
-  const t = state.theme;
-  const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
-  const rowNumWidth = Math.max(3, String(maxRowId).length);
-  const headerRows = t.headerSepLine ? 3 : 2;
-  const dataRows = Math.max(0, leafHeight - headerRows);
-
-  // Big goat mode: pane is tall enough to hold the full jgs sprite with
-  // breathing room. Anchor at the pane's bottom edge (or top if cursor
-  // is in the lower half). Don't use the goat's wandering position --
-  // the big goat is parked, not ambling. Only the chew frame animates.
-  if (dataRows >= BIG_MIN_ROWS && leafWidth >= BIG_WIDTH + 2) {
-    return renderBigGoat(leafTop, leafLeft, leafWidth, leafHeight,
-                         headerRows, pane.cursorRow, pane.scrollRow, dataRows);
-  }
-
-  // Compact mode: the cell-wandering goat.
-  if (_goat.rowIdx < pane.scrollRow) { return ""; }
-  if (_goat.colIdx < pane.scrollCol) { return ""; }
-
-  const colWidths = paneColWidths(pane);
-
-  // Screen column for a given pane column index (top-left of that cell).
-  const cellScreenCol = (colIdx: number): number => {
-    let x = leafLeft + rowNumWidth;
-    for (let c = pane.scrollCol; c < colIdx; c++) {
-      x += t.colSeparator.length + colWidths[c];
-    }
-    return x + t.colSeparator.length;
-  };
-
-  const cellScreenRow = (rowIdx: number): number =>
-    leafTop + headerRows + (rowIdx - pane.scrollRow);
-
-  let out = "";
-
-  // Trail markers -- tiny 3-char flowers, replacing the underlying cell
-  // character briefly.
-  for (let i = 0; i < _goat.trail.length; i++) {
-    const t = _goat.trail[i];
-    if (t.paneIdx !== _goat.paneIdx) { continue; }
-    if (t.rowIdx < pane.scrollRow) { continue; }
-    const sr = cellScreenRow(t.rowIdx);
-    const sc = cellScreenCol(t.colIdx);
-    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
-    if (sc < leafLeft + rowNumWidth || sc >= leafLeft + leafWidth) { continue; }
-    out += MOVE_TO(sr, sc) + TRAIL_CHARS[Math.min(i, TRAIL_CHARS.length - 1)];
-  }
-
-  // Goat sprite -- written line by line at the goat's anchor cell, shifted
-  // one line up so the face sits roughly on the goat's row rather than
-  // starting below it. Frame cycle: walk / walk / graze. Left/right
-  // frame set chosen by the goat's last horizontal move.
-  if (_goat.rowIdx < pane.scrollRow) { return out; }
-  const frameSet = _goat.dir === "left" ? COMPACT_FRAMES_LEFT : COMPACT_FRAMES_RIGHT;
-  const frame = frameSet[_goat.frame % GRAZE_FRAME_MOD];
-  const anchorRow = cellScreenRow(_goat.rowIdx) - 1;
-  const anchorCol = cellScreenCol(_goat.colIdx);
-  for (let r = 0; r < frame.length; r++) {
-    const sr = anchorRow + r;
-    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
-    const line = frame[r];
-    // Clip to pane right edge
-    const maxChars = Math.max(0, leafLeft + leafWidth - anchorCol);
-    const clipped = line.slice(0, maxChars);
-    if (clipped.length === 0) { continue; }
-    out += emitTransparentLine(sr, anchorCol, clipped);
-  }
-  return out;
-}
-
-/**
- * Emit a sprite line transparently: non-space runs get their own
- * MOVE_TO+text output; spaces are skipped so underlying cell content
- * shows through. Reduces flicker dramatically too -- between frames
- * only the pixels that actually change get rewritten.
- */
-function emitTransparentLine(sr: number, anchorCol: number, line: string): string {
-  let out = "";
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] === " ") { i++; continue; }
-    let j = i;
-    while (j < line.length && line[j] !== " ") { j++; }
-    out += MOVE_TO(sr, anchorCol + i) + line.slice(i, j);
-    i = j;
-  }
-  return out;
-}
-
-/**
- * Paint the big jgs goat at the pane's bottom edge. If the cursor is in
- * the lower half, paint at the top instead so we never cover it. The
- * sprite itself is static apart from the two-frame jaw-chew animation;
- * direction flips occasionally (mirrored sprite).
- */
-function renderBigGoat(
-  leafTop: number, leafLeft: number, leafWidth: number, leafHeight: number,
-  headerRows: number, cursorRow: number, scrollRow: number, dataRows: number,
-): string {
-  if (!_goat) { return ""; }
-  const frameSet = _goat.dir === "left" ? BIG_FRAMES_LEFT : BIG_FRAMES;
-  const frame = frameSet[_goat.frame % frameSet.length];
-  // If the user's cursor is in the lower half of visible rows, anchor the
-  // goat at the top instead so it never covers the cell they're on.
-  const cursorRel = cursorRow - scrollRow;
-  const anchorAtTop = cursorRel > dataRows / 2;
-  const firstRow = anchorAtTop
-    ? leafTop + headerRows
-    : leafTop + leafHeight - frame.length;
   let out = "";
   for (let r = 0; r < frame.length; r++) {
     const sr = firstRow + r;
-    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
+    if (sr < clipTop || sr >= clipBottom) { continue; }
     const line = frame[r];
-    // Clip to pane right edge so we don't bleed into another pane.
-    const maxChars = Math.max(0, leafWidth - 1);
-    const clipped = line.slice(0, maxChars);
-    out += emitTransparentLine(sr, leafLeft + 1, clipped);
+    const maxChars = Math.max(0, clipRight - anchorCol - 1);
+    out += emitSpriteLine(sr, anchorCol, line, maxChars);
   }
   return out;
 }
 
 /**
- * Column widths the same way the renderer computes them. Mirrors
- * ConsoleRenderer.computeColLayout; duplicated to avoid a circular
- * import (ConsoleRenderer imports from this module).
+ * Emit a sprite line with transparent exterior: only the span between
+ * the line's leftmost and rightmost non-space character is written.
+ * Leading and trailing spaces are skipped so cell content shows through;
+ * interior spaces inside the body span ARE written (painted blank) so
+ * the goat's body isn't see-through. `maxChars` bounds the scan, so
+ * callers don't need to pre-slice.
  */
-function paneColWidths(pane: PaneState): number[] {
-  return pane.columns.map(col => {
-    let w = col.label.length;
-    const values = pane.colValues[col.colId];
-    if (values) {
-      const sample = Math.min(values.length, 100);
-      for (let i = 0; i < sample; i++) {
-        const v = values[i];
-        const s = v == null ? "" : String(v);
-        if (s.length > w) { w = s.length; }
-      }
+function emitSpriteLine(sr: number, anchorCol: number, line: string, maxChars: number): string {
+  const end = Math.min(line.length, maxChars);
+  let left = -1;
+  let right = -1;
+  for (let i = 0; i < end; i++) {
+    if (line[i] !== " ") {
+      if (left < 0) { left = i; }
+      right = i;
     }
-    return Math.max(4, Math.min(30, w));
-  });
+  }
+  if (left < 0) { return ""; }
+  return MOVE_TO(sr, anchorCol + left) + GOAT_STYLE + line.slice(left, right + 1) + ANSI_RESET;
 }
 
 /**

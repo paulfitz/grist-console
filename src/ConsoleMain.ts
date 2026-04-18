@@ -2,7 +2,7 @@ import { BulkColValues, ColumnInfo, getBaseType } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
 import { render, showCursor } from "./ConsoleRenderer.js";
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleDisplay.js";
+import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SYNC_BEGIN, SYNC_END } from "./ConsoleDisplay.js";
 import { handleKeypress } from "./ConsoleInput.js";
 import { executeAddRow, executeDeleteRow, executeSaveEdit } from "./Commands.js";
 import {
@@ -128,22 +128,23 @@ export async function consoleMain(options: {
   scheduleProbe(state, doRender);
 
   // Goat animation timer: when the goat theme is active and we're in a
-  // grid-ish mode, advance the wandering goat every 1.5s. Starts/stops
-  // as the user cycles themes; cleaned up on exit.
+  // grid-ish mode, advance the wandering goat on a quick tick so it
+  // visibly moves. Starts/stops as the user cycles themes; cleaned up
+  // on exit.
   let goatTimer: ReturnType<typeof setInterval> | null = null;
   const syncGoatTimer = () => {
     const shouldRun = isGoatTheme(state.theme)
       && (state.mode === "grid" || state.mode === "editing");
     if (shouldRun && !goatTimer) {
       // Place the goat right away so the user sees it on the very next
-      // render (otherwise they'd wait up to 1500ms wondering where the
-      // goat is), then keep it wandering on the interval.
+      // render (otherwise they'd wait a tick wondering where the goat
+      // is), then keep it wandering on the interval.
       stepGoat(state);
       doRender(state);
       goatTimer = setInterval(() => {
         stepGoat(state);
         doRender(state);
-      }, 1500);
+      }, 900);
       goatTimer.unref?.();
     } else if (!shouldRun && goatTimer) {
       clearInterval(goatTimer);
@@ -527,7 +528,7 @@ function recomputeLayout(state: AppState): void {
 }
 
 function doRender(state: AppState): void {
-  process.stdout.write(render(state));
+  process.stdout.write(SYNC_BEGIN + render(state) + SYNC_END);
 }
 
 function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void): void {

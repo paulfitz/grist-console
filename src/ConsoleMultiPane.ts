@@ -21,8 +21,9 @@ import {
   displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
   applyChoiceColor, editWindow,
 } from "./ConsoleDisplay.js";
-import { computeColLayout, getStatusLine, isNumericType } from "./ConsoleRenderer.js";
-import { renderGoatOverlay } from "./GoatAnimation.js";
+import { getStatusLine, isNumericType } from "./ConsoleRenderer.js";
+import { computeColLayout } from "./ConsoleLayout.js";
+import { paintGoatIntoBuffer } from "./GoatAnimation.js";
 
 export function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
@@ -58,6 +59,12 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
     renderPaneInto(buf, leaf, pane, leaf.paneIndex, isFocused, state.mode, state.editValue, state.editCursorPos, t);
   }
 
+  // Paint the wandering goat INTO the buffer. writeToBuffer fills
+  // cell-by-cell so this overwrites individual cells cleanly; each
+  // line then hits the terminal with the goat already in place,
+  // eliminating the grid-then-goat flash on terminals without DEC 2026.
+  paintGoatIntoBuffer(state, buf, termCols);
+
   // Flatten buffer to string with ANSI positioning
   let output = HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 
@@ -89,11 +96,6 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
       CLEAR_LINE;
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
-
-  // Goat overlay: paints the wandering ASCII sprite on top of the
-  // already-drawn pane. Positioned by screen coords so the multi-line
-  // art doesn't get chopped by cell boundaries.
-  output += renderGoatOverlay(state, trayHeight, termRows, termCols);
 
   // Show terminal cursor at edit position when editing in a grid pane
   if (state.mode === "editing" && !state.cellViewerContent) {
@@ -138,6 +140,8 @@ function renderOverlay(
     paneIndex: state.overlayPaneIndex!,
   };
   renderPaneInto(buf, overlayLeaf, pane, state.overlayPaneIndex!, true, state.mode, state.editValue, state.editCursorPos, t);
+
+  paintGoatIntoBuffer(state, buf, termCols);
 
   let output = HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
   if (trayHeight > 0) {

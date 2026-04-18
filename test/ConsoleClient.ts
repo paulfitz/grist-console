@@ -3,7 +3,7 @@ import {
   extractPages, extractSectionsForView, extractFieldsForSection,
   extractFiltersForSection, extractCollapsedSectionIds,
   getColumnInfo, getColIdByRef, parseLayoutSpec, computeLayout,
-  getLayoutSpecForView, Rect,
+  getLayoutSpecForView, computeColLayout, Rect,
 } from "../src/ConsoleLayout.js";
 import { createInitialState, PaneState } from "../src/ConsoleAppState.js";
 import { render } from "../src/ConsoleRenderer.js";
@@ -2488,24 +2488,14 @@ describe("ConsoleClient", function() {
       return s;
     }
 
-    it("places a goat in the focused pane and avoids the cursor cell", function() {
+    it("places a goat in the focused pane with a non-negative x", function() {
       const s = goatState();
-      s.panes[0].cursorRow = 2;
-      s.panes[0].cursorCol = 1;
-      // 30 steps: goat should never land on (cursorRow, cursorCol).
       for (let i = 0; i < 30; i++) {
         stepGoat(s);
         const g = getGoat()!;
         assert.isOk(g, "goat should exist");
-        assert.notEqual(
-          `${g.rowIdx},${g.colIdx}`,
-          `${s.panes[0].cursorRow},${s.panes[0].cursorCol}`,
-          `goat landed on cursor at step ${i}`
-        );
-        assert.isAtLeast(g.rowIdx, 0);
-        assert.isBelow(g.rowIdx, 5);
-        assert.isAtLeast(g.colIdx, 0);
-        assert.isBelow(g.colIdx, 3);
+        assert.equal(g.paneIdx, 0);
+        assert.isAtLeast(g.x, 0);
       }
     });
 
@@ -2528,68 +2518,86 @@ describe("ConsoleClient", function() {
       assert.equal(out, "", "goat sprite should skip card panes");
     });
 
-    it("goat stays within the visible scroll window on big tables", function() {
-      // 500-row pane with scrollRow near the middle. The goat must
-      // consistently land inside [scrollRow, scrollRow + ~20) -- on the
-      // pre-fix code it would randomly land anywhere and be clipped.
-      const s = createInitialState("t");
-      s.focusedPane = 0;
-      const rowIds = Array.from({ length: 500 }, (_, i) => i + 1);
-      const names = rowIds.map(i => `Name${i}`);
-      s.panes = [makePane({
-        columns: [{ colId: "Name", type: "Text", label: "Name" }],
-        rowIds,
-        colValues: { Name: names },
-      })];
-      s.panes[0].scrollRow = 200;
-      for (let i = 0; i < 30; i++) {
+    it("goat's x bounces between 0 and walkMax", function() {
+      // Narrow pane so the walk range is small and the goat bounces
+      // within a few steps. Enough steps to cross the range multiple
+      // times.
+      const s = goatState();
+      s.layout = { top: 0, left: 0, width: 30, height: 10, paneIndex: 0 };
+      const seen = { low: false, high: false };
+      for (let i = 0; i < 40; i++) {
         stepGoat(s);
         const g = getGoat()!;
-        assert.isAtLeast(g.rowIdx, 200,
-          `step ${i}: goat at row ${g.rowIdx} is above scroll`);
-        // Upper bound: scrollRow + visibleRows (depends on process.stdout.rows;
-        // in tests this may be undefined -> 24; 24 - 6 - 3 = 15 visible rows).
-        assert.isBelow(g.rowIdx, 200 + 30,
-          `step ${i}: goat at row ${g.rowIdx} is below visible window`);
+        assert.isAtLeast(g.x, 0, `step ${i}: x below 0`);
+        // Upper bound: leafWidth - spriteWidth - 2. For a 30-wide pane
+        // and compact sprite (width ~12), walkMax is ~16. Allow slack.
+        assert.isBelow(g.x, 30, `step ${i}: x past leafWidth`);
+        if (g.x === 0) { seen.low = true; }
+        if (g.x >= 10) { seen.high = true; }
+      }
+      assert.isTrue(seen.low && seen.high, "goat should touch both edges over many steps");
+    });
+
+    it("scurries past the cursor when they would overlap", function() {
+      // Wide pane so the goat has room to scurry on either side, and
+      // cursor in the middle so the walk will run into it. Compute
+      // cursor screen span using the same math the code does, then
+      // verify the goat's sprite span never overlaps it after a step.
+      const s = goatState();
+      s.layout = { top: 0, left: 0, width: 80, height: 10, paneIndex: 0 };
+      s.panes[0].cursorCol = 1;
+      // Put the cursor in the goat's vertical band (bottom of pane with
+      // this layout) so overlap is actually possible.
+      s.panes[0].cursorRow = 2;
+      const cols = computeColLayout(s.panes[0]);
+      const sepLen = s.theme.colSeparator.length;
+      const rowNumWidth = 3;
+      let cursorLeft = rowNumWidth;
+      for (let c = 0; c < s.panes[0].cursorCol; c++) {
+        cursorLeft += sepLen + cols[c].width;
+      }
+      cursorLeft += sepLen;
+      const cursorRight = cursorLeft + cols[s.panes[0].cursorCol].width;
+      for (let i = 0; i < 40; i++) {
+        stepGoat(s);
+        const g = getGoat()!;
+        const spriteL = g.x + 1;
+        const spriteR = g.x + 1 + 12; // compact sprite width
+        const overlapping = cursorLeft < spriteR && spriteL < cursorRight;
+        assert.isFalse(overlapping,
+          `step ${i}: goat [${spriteL},${spriteR}) straddles cursor [${cursorLeft},${cursorRight})`);
       }
     });
 
-    it("renderGoatOverlay is empty when goat is scrolled out of view", function() {
+    it("does not scurry when cursor is on a different row band", function() {
+      // Cursor in the header area: no vertical overlap with the sprite,
+      // so the goat should walk normally without leaping around.
       const s = goatState();
-      s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
-      stepGoat(s);
-      // Scroll way past the goat -- it's off the top of the visible area.
-      s.panes[0].scrollRow = 100;
-      const out = renderGoatOverlay(s, 0, 24, 80);
-      assert.equal(out, "");
+      s.layout = { top: 0, left: 0, width: 30, height: 10, paneIndex: 0 };
+      s.panes[0].cursorCol = 1;
+      s.panes[0].cursorRow = 0;
+      const xs: number[] = [];
+      for (let i = 0; i < 12; i++) {
+        stepGoat(s);
+        xs.push(getGoat()!.x);
+      }
+      // Without scurry interference, x should advance by WALK_STEP each
+      // step until it hits walkMax, never skipping ahead. If any step
+      // delta exceeds WALK_STEP the scurry fired.
+      for (let i = 1; i < xs.length; i++) {
+        const delta = Math.abs(xs[i] - xs[i - 1]);
+        assert.isAtMost(delta, 3,
+          `step ${i}: delta ${delta} > WALK_STEP (scurry triggered unexpectedly)`);
+      }
     });
 
     it("renderGoatOverlay emits sprite lines when a goat is placed", function() {
       const s = goatState();
       s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
-      // Step until the goat lands somewhere the whole sprite fits (not
-      // the top-most row, where the top horn line would be clipped by
-      // the header). Random wandering finds it quickly.
-      for (let i = 0; i < 50 && (!getGoat() || getGoat()!.rowIdx < 1); i++) {
-        stepGoat(s);
-      }
-      assert.isAtLeast(getGoat()!.rowIdx, 1);
+      stepGoat(s);
       const out = renderGoatOverlay(s, 0, 24, 80);
-      // Curly horn arch:
-      assert.match(out, /\)\)_\(\(/, "overlay should include the curly horns");
-      // Transparent rendering splits `^0 0^` into `^0` and `0^` (separated by
-      // a space that's skipped), so check both pieces are present.
-      assert.match(out, /\^(0|o)/, "overlay should include left ear+eye");
-      assert.match(out, /(0|o)\^/, "overlay should include right ear+eye");
-    });
-
-    it("records a trail across multiple steps", function() {
-      const s = goatState();
-      stepGoat(s);
-      stepGoat(s);
-      const g = getGoat()!;
-      assert.isAtLeast(g.trail.length, 1, "trail should grow by one per step");
-      assert.equal(g.trail[0].paneIdx, 0);
+      // Curly horn arch from the compact sprite (or `(\/_//` from big).
+      assert.match(out, /\)\)_\(\(|\(\\\/_\/\//, "overlay should include goat horns");
     });
 
     it("resets when the focused pane has no rows / no cols", function() {
