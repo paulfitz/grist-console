@@ -2509,6 +2509,35 @@ describe("ConsoleClient", function() {
       }
     });
 
+    it("renderGoatOverlay is empty on card panes", function() {
+      const s = createInitialState("t");
+      s.focusedPane = 0;
+      s.panes = [makePane({
+        sectionInfo: {
+          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "single",
+          title: "T", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+          sortColRefs: "",
+        },
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1, 2, 3],
+        colValues: { Name: ["a", "b", "c"] },
+      })];
+      s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
+      stepGoat(s);
+      const out = renderGoatOverlay(s, 0, 24, 80);
+      assert.equal(out, "", "goat sprite should skip card panes");
+    });
+
+    it("renderGoatOverlay is empty when goat is scrolled out of view", function() {
+      const s = goatState();
+      s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
+      stepGoat(s);
+      // Scroll way past the goat -- it's off the top of the visible area.
+      s.panes[0].scrollRow = 100;
+      const out = renderGoatOverlay(s, 0, 24, 80);
+      assert.equal(out, "");
+    });
+
     it("renderGoatOverlay emits sprite lines when a goat is placed", function() {
       const s = goatState();
       s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };

@@ -168,6 +168,14 @@ export function renderGoatOverlay(
   if (!_goat) { return ""; }
   const pane = state.panes[_goat.paneIdx];
   if (!pane) { return ""; }
+  // Card panes (single / detail) lay out vertically with no column
+  // header row, so the overlay's grid-based math lands in the wrong
+  // place. Skip them entirely.
+  const pk = pane.sectionInfo?.parentKey;
+  if (pk === "single" || pk === "detail" || pk === "chart") { return ""; }
+  // Goat scrolled out of view (user scrolled past it either way)?
+  if (_goat.rowIdx < pane.scrollRow) { return ""; }
+  if (_goat.colIdx < pane.scrollCol) { return ""; }
 
   // Resolve the pane's screen rectangle (leaf) and the column layout.
   let leafTop = trayHeight;
