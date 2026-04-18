@@ -124,31 +124,34 @@ function parseKey(buf: Buffer): string {
 /**
  * Handle a keypress in table picker mode.
  */
+/**
+ * Move a list cursor (selectedTableIndex / selectedPageIndex) in response to
+ * a navigation key. Returns the new cursor and whether the key was a
+ * navigation key (so the caller knows whether to fall through).
+ */
+function navigateList(
+  key: string, cursor: number, max: number, pageSize: number
+): { cursor: number; handled: boolean } {
+  if (max <= 0) { return { cursor, handled: false }; }
+  switch (key) {
+    case "up":       return { cursor: Math.max(0, cursor - 1), handled: true };
+    case "down":     return { cursor: Math.min(max - 1, cursor + 1), handled: true };
+    case "pageup":   return { cursor: Math.max(0, cursor - pageSize), handled: true };
+    case "pagedown": return { cursor: Math.min(max - 1, cursor + pageSize), handled: true };
+    case "home":     return { cursor: 0, handled: true };
+    case "end":      return { cursor: max - 1, handled: true };
+    default:         return { cursor, handled: false };
+  }
+}
+
 function handleTablePickerKey(key: string, state: AppState): InputAction {
   const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
+  const nav = navigateList(key, state.selectedTableIndex, state.tableIds.length, pageSize);
+  if (nav.handled) {
+    state.selectedTableIndex = nav.cursor;
+    return { type: "render" };
+  }
   switch (key) {
-    case "up":
-      if (state.selectedTableIndex > 0) {
-        state.selectedTableIndex--;
-      }
-      return { type: "render" };
-    case "down":
-      if (state.selectedTableIndex < state.tableIds.length - 1) {
-        state.selectedTableIndex++;
-      }
-      return { type: "render" };
-    case "pageup":
-      state.selectedTableIndex = Math.max(0, state.selectedTableIndex - pageSize);
-      return { type: "render" };
-    case "pagedown":
-      state.selectedTableIndex = Math.min(state.tableIds.length - 1, state.selectedTableIndex + pageSize);
-      return { type: "render" };
-    case "home":
-      state.selectedTableIndex = 0;
-      return { type: "render" };
-    case "end":
-      state.selectedTableIndex = Math.max(0, state.tableIds.length - 1);
-      return { type: "render" };
     case "enter":
       return { type: "select_table" };
     case "p":
@@ -253,29 +256,12 @@ function handleConfirmDeleteKey(key: string, state: AppState): InputAction {
  */
 function handlePagePickerKey(key: string, state: AppState): InputAction {
   const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
+  const nav = navigateList(key, state.selectedPageIndex, state.pages.length, pageSize);
+  if (nav.handled) {
+    state.selectedPageIndex = nav.cursor;
+    return { type: "render" };
+  }
   switch (key) {
-    case "up":
-      if (state.selectedPageIndex > 0) {
-        state.selectedPageIndex--;
-      }
-      return { type: "render" };
-    case "down":
-      if (state.selectedPageIndex < state.pages.length - 1) {
-        state.selectedPageIndex++;
-      }
-      return { type: "render" };
-    case "pageup":
-      state.selectedPageIndex = Math.max(0, state.selectedPageIndex - pageSize);
-      return { type: "render" };
-    case "pagedown":
-      state.selectedPageIndex = Math.min(state.pages.length - 1, state.selectedPageIndex + pageSize);
-      return { type: "render" };
-    case "home":
-      state.selectedPageIndex = 0;
-      return { type: "render" };
-    case "end":
-      state.selectedPageIndex = Math.max(0, state.pages.length - 1);
-      return { type: "render" };
     case "enter":
       return { type: "select_page" };
     case "t":
