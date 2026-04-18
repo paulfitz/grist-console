@@ -10,7 +10,7 @@
  * race-handling flag.
  */
 
-import { AppState } from "./ConsoleRenderer.js";
+import { AppState } from "./ConsoleAppState.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 
 // Subset of ActionGroup relevant to undo stack bookkeeping.

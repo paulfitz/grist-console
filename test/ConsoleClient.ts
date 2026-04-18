@@ -5,7 +5,9 @@ import {
   getColumnInfo, getColIdByRef, parseLayoutSpec, computeLayout,
   getLayoutSpecForView, Rect,
 } from "../src/ConsoleLayout.js";
-import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
+import { createInitialState, PaneState } from "../src/ConsoleAppState.js";
+import { render } from "../src/ConsoleRenderer.js";
+import { displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleDisplay.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { getVisualPaneOrder } from "../src/ConsoleMain.js";

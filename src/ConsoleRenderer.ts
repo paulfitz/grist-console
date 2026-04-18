@@ -4,13 +4,9 @@ import { LayoutNode, collectLeaves } from "./ConsoleLayout.js";
 import { Theme } from "./ConsoleTheme.js";
 import {
   CLEAR_LINE, MOVE_TO, HIDE_CURSOR, SHOW_CURSOR,
-  ENTER_ALT_SCREEN, EXIT_ALT_SCREEN,
   displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
   applyChoiceColor, editWindow, extractUrls,
 } from "./ConsoleDisplay.js";
-
-// Re-export the ANSI screen controls for consumers (ConsoleMain)
-export { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, displayWidth, flattenToLine, applyChoiceColor, editWindow };
 
 /**
  * Build the screen preamble: hide cursor, set background color, move to home.
@@ -23,7 +19,6 @@ function screenPreamble(t: Theme): string {
   return HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 }
 
-export { AppMode, AppState, PaneState, createInitialState, isCardPane } from "./ConsoleAppState.js";
 import { AppMode, AppState, PaneState, isCardPane, activeView } from "./ConsoleAppState.js";
 
 interface ColLayout {

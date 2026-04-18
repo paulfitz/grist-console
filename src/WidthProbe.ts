@@ -10,7 +10,7 @@
  * probe completes, with any CPR response bytes stripped out.
  */
 
-import { AppState } from "./ConsoleRenderer.js";
+import { AppState } from "./ConsoleAppState.js";
 import { BulkColValues, ColumnInfo } from "./types.js";
 import { probeChar, hasProbed, getWidthReport, getMode2027Status } from "./termWidth.js";
 

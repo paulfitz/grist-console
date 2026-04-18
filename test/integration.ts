@@ -24,7 +24,7 @@ function defaultVal(colType: string): any {
     default: return null;
   }
 }
-import { PaneState } from "../src/ConsoleRenderer.js";
+import { PaneState } from "../src/ConsoleAppState.js";
 import { BulkColValues, DocAction } from "../src/types.js";
 import {
   SERVER_URL, API_KEY,
