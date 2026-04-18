@@ -35,6 +35,8 @@ export class ConsoleConnection {
   private _pending: Map<number, { resolve: (v: GristResponse) => void, reject: (e: Error) => void, timer: ReturnType<typeof setTimeout> }> = new Map();
   private _onDocAction: DocActionCallback | null = null;
   private _onClientConnect: (() => void) | null = null;
+  private _onDisconnect: ((reason: string) => void) | null = null;
+  private _disconnected = false;
   private _serverUrl: string;
   private _docId: string;
   private _apiKey: string | undefined;
@@ -54,6 +56,40 @@ export class ConsoleConnection {
 
   public onDocAction(cb: DocActionCallback) {
     this._onDocAction = cb;
+  }
+
+  /**
+   * Register a callback for unexpected disconnects (server-initiated close,
+   * socket error after the initial handshake). Not called by close() since
+   * that's an intentional shutdown.
+   */
+  public onDisconnect(cb: (reason: string) => void) {
+    this._onDisconnect = cb;
+  }
+
+  /**
+   * Reject every in-flight request with a connection-error. Called when the
+   * socket dies so awaits don't hang for 30s.
+   */
+  private _failPending(reason: string): void {
+    for (const entry of this._pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(reason));
+    }
+    this._pending.clear();
+  }
+
+  /** True if the WebSocket has died unexpectedly. */
+  public isDisconnected(): boolean {
+    return this._disconnected;
+  }
+
+  private _handleDisconnect(reason: string): void {
+    if (this._disconnected) { return; } // first event wins
+    this._disconnected = true;
+    this._log(reason);
+    this._failPending(reason);
+    if (this._onDisconnect) { this._onDisconnect(reason); }
   }
 
   /**
@@ -110,8 +146,16 @@ export class ConsoleConnection {
       };
 
       this._ws.onopen = () => {
-        this._ws!.onerror = () => {
-          // After connect, just log errors
+        // After connect: a socket error or server-initiated close is fatal
+        // for this session. Reject in-flight requests and notify the
+        // consumer so the UI can surface the disconnect.
+        this._ws!.onerror = (event: WS.ErrorEvent) => {
+          this._handleDisconnect(`websocket error: ${event.message || "unknown"}`);
+        };
+        this._ws!.onclose = (event: WS.CloseEvent) => {
+          this._handleDisconnect(
+            `websocket closed: ${event.code}${event.reason ? ` (${event.reason})` : ""}`
+          );
         };
         this._log("websocket: connected");
         if (!settled) { settled = true; resolve(); }
@@ -239,14 +283,18 @@ export class ConsoleConnection {
   }
 
   /**
-   * Close the document and disconnect immediately.
+   * Close the document and disconnect immediately. Rejects any in-flight
+   * requests with a "connection closed" error so awaits don't dangle.
    */
   public async close(): Promise<void> {
-    // Clear all pending request timers so they don't keep the event loop alive
-    for (const entry of this._pending.values()) {
-      clearTimeout(entry.timer);
+    // Suppress the onclose handler -- this is an intentional shutdown,
+    // not an unexpected disconnect, so we don't want to fire the
+    // onDisconnect callback.
+    if (this._ws) {
+      this._ws.onclose = () => undefined;
+      this._ws.onerror = () => undefined;
     }
-    this._pending.clear();
+    this._failPending("connection closed");
     if (this._ws) {
       this._ws.terminate();
       this._ws = null;
@@ -259,7 +307,7 @@ export class ConsoleConnection {
     if (!tablesT || !colsT) { return []; }
 
     // Find the table's ref
-    const tableRef = tablesT.ids[(tablesT.vals.tableId as string[]).indexOf(tableId)];
+    const tableRef = tablesT.ids[tablesT.vals.tableId.indexOf(tableId)];
     if (tableRef === undefined) { return []; }
 
     // Collect column refs whose parent is this table, then resolve each
@@ -399,8 +447,8 @@ export class ConsoleConnection {
 
   private _send(method: string, ...args: any[]): Promise<GristResponse> {
     return new Promise((resolve, reject) => {
-      if (!this._ws) {
-        reject(new Error("Not connected"));
+      if (!this._ws || this._disconnected) {
+        reject(new Error(this._disconnected ? "Disconnected" : "Not connected"));
         return;
       }
       this._reqId++;

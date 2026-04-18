@@ -12,8 +12,8 @@ import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZw
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { getVisualPaneOrder } from "../src/ConsoleMain.js";
 import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter } from "../src/LinkingState.js";
-import { appendRowToColValues } from "../src/ActionDispatcher.js";
-import { handleOwnActionGroup, _setExpectingRedo } from "../src/UndoStack.js";
+import { appendRowToColValues, applyDocActions } from "../src/ActionDispatcher.js";
+import { handleOwnActionGroup } from "../src/UndoStack.js";
 import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
@@ -1706,6 +1706,53 @@ describe("ConsoleClient", function() {
     });
   });
 
+  describe("applyDocActions (schema-change handling)", function() {
+    function stateWithPane(): ReturnType<typeof createInitialState> {
+      const s = createInitialState("test");
+      s.currentTableId = "People";
+      s.panes = [makePane({
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1, 2],
+        colValues: { Name: ["Alice", "Bob"] },
+      })];
+      return s;
+    }
+
+    it("sets schemaStale on AddColumn / RemoveColumn / RenameColumn / ModifyColumn", function() {
+      for (const op of ["AddColumn", "RemoveColumn", "RenameColumn", "ModifyColumn"]) {
+        const s = stateWithPane();
+        applyDocActions(s, [[op, "People", "X", { type: "Text" }] as any]);
+        assert.isTrue(s.schemaStale, `${op} should set schemaStale`);
+      }
+    });
+
+    it("skips data actions later in the same broadcast after a schema change", function() {
+      const s = stateWithPane();
+      applyDocActions(s, [
+        ["RenameColumn", "People", "Name", "FullName"] as any,
+        ["UpdateRecord", "People", 1, { Name: "Alicia" }] as any,
+      ]);
+      assert.isTrue(s.schemaStale);
+      // The UpdateRecord must not have been applied -- our column metadata is
+      // stale, applying the change might write under a renamed/dropped colId.
+      assert.deepEqual(s.panes[0].colValues.Name, ["Alice", "Bob"]);
+    });
+
+    it("skips all subsequent broadcasts while stale", function() {
+      const s = stateWithPane();
+      s.schemaStale = true;
+      applyDocActions(s, [["UpdateRecord", "People", 1, { Name: "Alicia" }] as any]);
+      assert.deepEqual(s.panes[0].colValues.Name, ["Alice", "Bob"]);
+    });
+
+    it("applies normal data actions when schema is fresh", function() {
+      const s = stateWithPane();
+      applyDocActions(s, [["UpdateRecord", "People", 1, { Name: "Alicia" }] as any]);
+      assert.isFalse(s.schemaStale);
+      assert.deepEqual(s.panes[0].colValues.Name, ["Alicia", "Bob"]);
+    });
+  });
+
   describe("undo stack (handleOwnActionGroup)", function() {
     function freshState() {
       const s = createInitialState("test");
@@ -1738,50 +1785,44 @@ describe("ConsoleClient", function() {
       assert.equal(s.undoPointer, 1);
     });
 
-    it("redo broadcast advances pointer (_expectingRedo flag)", function() {
-      try {
-        const s = freshState();
-        handleOwnActionGroup(s, ag(1));
-        handleOwnActionGroup(s, ag(2));
-        // User undid both: pointer=0
-        s.undoPointer = 0;
-        // User presses redo: executeRedo sets _expectingRedo
-        _setExpectingRedo(true);
-        // Broadcast for the redo arrives
-        handleOwnActionGroup(s, ag(10, "h10"));
-        // Stack should be unchanged; pointer advances
-        assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
-        assert.equal(s.undoPointer, 1);
-      } finally {
-        _setExpectingRedo(false);
-      }
+    it("redo broadcast advances pointer (matched by otherId)", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      // User undid both: pointer=0
+      s.undoPointer = 0;
+      // User presses redo. Broadcast for the redo carries otherId=1 (the
+      // original action's actionNum) and a new actionNum (10).
+      handleOwnActionGroup(s, ag(10, "h10", { otherId: 1 }));
+      // Stack should be unchanged; pointer advances past entry 1.
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
+      assert.equal(s.undoPointer, 1);
     });
 
-    it("race: broadcast before pointer increment produces consistent state", function() {
-      // Simulates: executeRedo sets _expectingRedo, RPC sent.
-      // Broadcast arrives BEFORE RPC resolves -> handler advances pointer.
-      // Then executeRedo's post-await path runs; with our fix it does NOT
-      // double-increment the pointer.
-      try {
-        const s = freshState();
-        handleOwnActionGroup(s, ag(1));
-        s.undoPointer = 0; // after undo
-        _setExpectingRedo(true);
-        // Broadcast arrives first (race case):
-        handleOwnActionGroup(s, ag(5, "h5"));
-        assert.equal(s.undoPointer, 1);
-        assert.deepEqual(s.undoStack.map(e => e.actionNum), [1]);
-        // If we then do another undo (clamped access should not crash):
-        assert.doesNotThrow(() => {
-          if (s.undoPointer > 0) {
-            const e = s.undoStack[s.undoPointer - 1];
-            assert.isOk(e);
-            assert.equal(e.actionNum, 1);
-          }
-        });
-      } finally {
-        _setExpectingRedo(false);
-      }
+    it("race: a fresh edit's broadcast arriving before a pending redo's broadcast " +
+       "is correctly classified", function() {
+      // The whole point of the otherId-based design: even if broadcasts
+      // arrive in the "wrong" order, each is identified by content, not
+      // arrival timing. Previously a flag-based design misclassified
+      // whichever broadcast arrived first as the redo.
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      s.undoPointer = 0; // after two undos
+
+      // User presses redo (in flight). Then user immediately makes a
+      // fresh edit (also in flight). The fresh edit's broadcast arrives
+      // first -- it has no otherId, so it's classified as a fresh edit.
+      handleOwnActionGroup(s, ag(20, "h20"));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [20]);
+      assert.equal(s.undoPointer, 1);
+
+      // Now the redo's broadcast arrives (otherId=1). But entry 1 is no
+      // longer in the stack (it was trimmed by the fresh edit). The
+      // handler drops it -- no spurious push, no spurious advance.
+      handleOwnActionGroup(s, ag(21, "h21", { otherId: 1 }));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [20]);
+      assert.equal(s.undoPointer, 1);
     });
 
     it("new edit after undo trims the redo tail", function() {

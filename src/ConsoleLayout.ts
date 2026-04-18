@@ -1,13 +1,50 @@
 import { ColumnInfo } from "./types.js";
 
 /**
+ * Schemas for the Grist meta tables we read. Each value is the columnar
+ * shape returned by openDoc -- `{ colId: [values] }`. Listing only the
+ * columns we actually access; Grist may include more.
+ */
+export interface MetaTableSchemas {
+  _grist_Pages: {
+    viewRef: number[]; pagePos?: number[]; indentation?: number[];
+  };
+  _grist_Views: {
+    name: string[]; layoutSpec?: string[];
+  };
+  _grist_Views_section: {
+    parentId: number[]; tableRef: number[]; parentKey: string[];
+    title?: string[]; linkSrcSectionRef?: number[]; linkSrcColRef?: number[];
+    linkTargetColRef?: number[]; sortColRefs?: string[];
+  };
+  _grist_Views_section_field: {
+    parentId: number[]; colRef: number[]; parentPos?: number[];
+  };
+  _grist_Tables: {
+    tableId: string[]; primaryViewId?: number[]; summarySourceTable?: number[];
+    onDemand?: boolean[]; rawViewSectionRef?: number[];
+  };
+  _grist_Tables_column: {
+    parentId: number[]; colId: string[]; type: string[]; label?: string[];
+    widgetOptions?: string[]; visibleCol?: number[];
+  };
+  _grist_Filters: {
+    viewSectionRef: number[]; colRef: number[]; filter?: string[];
+    pinned?: boolean[];
+  };
+}
+
+/**
  * Read a Grist meta table out of the openDoc metaTables blob. Each meta
  * table is wire-encoded as ["TableData", tableId, [rowIds], {colId: [vals]}],
  * so the rowIds live at index 2 and the column values at index 3.
  *
  * Returns null when the table isn't present (defensive against partial docs).
+ * The `vals` shape is typed by the requested table name.
  */
-export function readMetaTable(metaTables: any, name: string): { ids: number[]; vals: any } | null {
+export function readMetaTable<K extends keyof MetaTableSchemas>(
+  metaTables: any, name: K,
+): { ids: number[]; vals: MetaTableSchemas[K] } | null {
   const data = metaTables?.[name];
   if (!data) { return null; }
   return { ids: data[2], vals: data[3] };

@@ -21,18 +21,15 @@ interface UndoActionGroup {
   otherId?: number;
 }
 
-// Module flag used by handleOwnActionGroup to differentiate a redo broadcast
-// (which shouldn't add to the stack -- just advance the pointer) from a fresh
-// edit (which should trim and push).
-let _expectingRedo = false;
-
-/** Test-only: set _expectingRedo to simulate the executeRedo path. */
-export function _setExpectingRedo(v: boolean): void { _expectingRedo = v; }
-
 /**
  * Record an action-group broadcast that originated from our own client
- * (fromSelf=true). Pushes new edits to the stack, ignores undo confirmations,
- * and advances the pointer for redo confirmations without duplicating entries.
+ * (fromSelf=true).
+ *
+ * Identifies what kind of confirmation this is by the broadcast's own fields,
+ * not by a "next-arriving" flag -- otherwise a fresh edit's broadcast that
+ * raced ahead of a pending redo's broadcast would be misclassified. Grist's
+ * applyUserActionsById echoes back the original action's number as
+ * `otherId`; fresh applyUserActions calls leave it 0/undefined.
  */
 export function handleOwnActionGroup(state: AppState, ag: UndoActionGroup): void {
   if (!ag.actionNum || !ag.actionHash) { return; }
@@ -40,13 +37,16 @@ export function handleOwnActionGroup(state: AppState, ag: UndoActionGroup): void
     // Undo confirmation. executeUndo already decremented the pointer.
     return;
   }
-  if (_expectingRedo) {
-    // Confirmation of a redo we just issued. The stack already has this
-    // entry (at state.undoPointer). Just advance the pointer.
-    _expectingRedo = false;
-    if (state.undoPointer < state.undoStack.length) {
-      state.undoPointer++;
+  if (ag.otherId && ag.otherId > 0) {
+    // Redo confirmation -- find the matching stack entry by its actionNum
+    // and advance the pointer past it. Race-free: identity-based, not
+    // arrival-order based.
+    const idx = state.undoStack.findIndex(e => e.actionNum === ag.otherId);
+    if (idx >= 0) {
+      state.undoPointer = Math.max(state.undoPointer, idx + 1);
     }
+    // If the otherId isn't in our stack, drop it -- it's neither a fresh
+    // edit nor a redo we issued, so we shouldn't push it.
     return;
   }
   // New edit: trim any redo entries (they've been invalidated) and push
@@ -103,17 +103,15 @@ export async function executeRedo(state: AppState, conn: ConsoleConnection): Pro
     return;
   }
   try {
-    // Mark that the next fromSelf non-undo broadcast is a redo, so the handler
-    // doesn't push a duplicate entry. The redo's docUserAction broadcast may
-    // arrive before OR after this await resolves, so we can't safely do
-    // pointer++ here -- let the handler advance the pointer.
-    _expectingRedo = true;
+    // The redo's broadcast carries otherId=entry.actionNum, so the handler
+    // can identify it by content (no need to flag "next-arriving" anything).
+    // The pointer advance happens in handleOwnActionGroup when the broadcast
+    // arrives, race-free with respect to concurrent fresh edits.
     await conn.applyUserActionsById(
       [entry.actionNum], [entry.actionHash], false, { otherId: entry.actionNum },
     );
     state.statusMessage = "Redone";
   } catch (e: any) {
     state.statusMessage = `Redo failed: ${e.message}`;
-    _expectingRedo = false;
   }
 }

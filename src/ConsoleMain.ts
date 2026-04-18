@@ -109,6 +109,13 @@ export async function consoleMain(options: {
     scheduleProbe(state, doRender);
   });
 
+  // Surface unexpected disconnects in the status line. Subsequent edits
+  // will fast-fail rather than hanging for 30s waiting for a response.
+  conn.onDisconnect((reason) => {
+    state.statusMessage = `Disconnected: ${reason}. Press q to quit.`;
+    doRender(state);
+  });
+
   // Enter the alternate screen buffer so the initial state is clean and
   // the user's scrollback isn't polluted with our rendering.
   if (process.stdout.isTTY) {
@@ -332,6 +339,7 @@ function cyclePane(state: AppState, direction: 1 | -1): void {
 async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void> {
   const data = await conn.fetchTable(state.currentTableId);
   await resolveDisplayValues(data.columns, conn);
+  state.schemaStale = false;
   // Single-table mode = one synthetic pane with no sectionInfo/linking data.
   state.panes = [{
     columns: data.columns,
@@ -394,6 +402,7 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
     state.statusMessage = "No sections on this page";
     return;
   }
+  state.schemaStale = false;
 
   // Fetch data for each unique table
   const tableDataCache = new Map<string, { rowIds: number[]; colValues: BulkColValues }>();

@@ -56,6 +56,10 @@ export interface AppState {
   layout: LayoutNode | null;
   boxSpec: BoxSpec | null;
   focusedPane: number;
+  // Set true when a server-side schema change (Add/Remove/Rename/ModifyColumn)
+  // arrives. Subsequent data actions are skipped (they may reference columns
+  // we no longer know about) until the user refreshes via loadTable/loadPage.
+  schemaStale: boolean;
   // Collapsed widget tray
   collapsedPaneIndices: number[];
   overlayPaneIndex: number | null;
@@ -88,6 +92,7 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     layout: null,
     boxSpec: null,
     focusedPane: 0,
+    schemaStale: false,
     collapsedPaneIndices: [],
     overlayPaneIndex: null,
     cellViewerContent: "",

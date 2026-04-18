@@ -21,11 +21,20 @@ export function applyDocActions(state: AppState, actions: DocAction[]): void {
   for (const action of actions) {
     const actionType = action[0];
     const tableId = action[1] as string;
-    // Schema changes require a refresh; can't update in-place reliably
+    // Schema changes can't be applied in-place reliably -- a renamed or
+    // dropped column would leave colId references in our pane state pointing
+    // at nothing. Mark the state stale and stop processing further actions
+    // (data actions later in the same broadcast may reference the new
+    // schema). The user refreshes via 'r' to reload the affected data.
     if (actionType === "AddColumn" || actionType === "RemoveColumn" ||
         actionType === "RenameColumn" || actionType === "ModifyColumn") {
+      state.schemaStale = true;
       state.statusMessage = "Schema changed - press r to refresh";
-      continue;
+      return;
+    }
+    if (state.schemaStale) {
+      // Already in stale state; don't compound the inconsistency.
+      return;
     }
     for (const pane of state.panes) {
       if (paneTableId(pane, state) === tableId) {

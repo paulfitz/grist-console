@@ -52,6 +52,11 @@ export function computeColLayout(pane: PaneState): ColLayout[] {
  * otherwise show the statusMessage.
  */
 export function getStatusLine(state: AppState, termCols: number): string {
+  // Persistent warnings take priority and survive cursor moves that would
+  // otherwise clear state.statusMessage.
+  if (state.schemaStale) {
+    return truncate("⚠ Schema changed - press r to refresh", termCols);
+  }
   if (state.statusMessage) { return state.statusMessage; }
   if (state.mode === "editing") { return ""; }
 
