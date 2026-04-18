@@ -91,6 +91,24 @@ const BIG_FRAMES: string[][] = [
 const BIG_HEIGHT = BIG_FRAMES[0].length;
 const BIG_WIDTH = Math.max(...BIG_FRAMES[0].map(l => l.length));
 
+/**
+ * Mirror a sprite line for a left-facing version. Reverses the characters
+ * and swaps each directional glyph (`/`↔`\`, `(`↔`)`, `<`↔`>`, etc.).
+ * Leaves symmetrical chars (`~`, `^`, `_`, `-`, `|`, `"`, `'`) untouched.
+ */
+const MIRROR_MAP: Record<string, string> = {
+  "/": "\\", "\\": "/",
+  "(": ")", ")": "(",
+  "<": ">", ">": "<",
+  "{": "}", "}": "{",
+  "[": "]", "]": "[",
+  "`": "'", "'": "`",
+};
+function mirrorLine(line: string): string {
+  return [...line].reverse().map(c => MIRROR_MAP[c] ?? c).join("");
+}
+const BIG_FRAMES_LEFT: string[][] = BIG_FRAMES.map(frame => frame.map(mirrorLine));
+
 // Pane must have at least this many visible data rows to show the big goat.
 // Otherwise we fall back to the compact sprite.
 const BIG_MIN_ROWS = BIG_HEIGHT + 4;
@@ -262,13 +280,16 @@ export function stepGoat(state: AppState): boolean {
   const snack = text ? text.slice(0, 20) : "(empty)";
 
   // Infer the goat's facing direction from the horizontal move. Vertical
-  // moves and teleports preserve the previous direction (goat keeps
-  // looking where it was looking).
+  // moves and teleports preserve the previous direction. Once in a while
+  // the goat idly glances the other way (about 1 step in 6), so even the
+  // stationary big-goat mode still flips occasionally.
   let dir: GoatDir = _goat?.dir ?? "right";
   if (_goat && _goat.paneIdx === paneIdx) {
     if (next.colIdx > _goat.colIdx) { dir = "right"; }
     else if (next.colIdx < _goat.colIdx) { dir = "left"; }
   }
+  const WHIM_FLIP_P = 0.15;
+  if (Math.random() < WHIM_FLIP_P) { dir = dir === "left" ? "right" : "left"; }
 
   _goat = {
     ...next,
@@ -385,7 +406,26 @@ export function renderGoatOverlay(
     const maxChars = Math.max(0, leafLeft + leafWidth - anchorCol);
     const clipped = line.slice(0, maxChars);
     if (clipped.length === 0) { continue; }
-    out += MOVE_TO(sr, anchorCol) + clipped;
+    out += emitTransparentLine(sr, anchorCol, clipped);
+  }
+  return out;
+}
+
+/**
+ * Emit a sprite line transparently: non-space runs get their own
+ * MOVE_TO+text output; spaces are skipped so underlying cell content
+ * shows through. Reduces flicker dramatically too -- between frames
+ * only the pixels that actually change get rewritten.
+ */
+function emitTransparentLine(sr: number, anchorCol: number, line: string): string {
+  let out = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === " ") { i++; continue; }
+    let j = i;
+    while (j < line.length && line[j] !== " ") { j++; }
+    out += MOVE_TO(sr, anchorCol + i) + line.slice(i, j);
+    i = j;
   }
   return out;
 }
@@ -393,14 +433,16 @@ export function renderGoatOverlay(
 /**
  * Paint the big jgs goat at the pane's bottom edge. If the cursor is in
  * the lower half, paint at the top instead so we never cover it. The
- * sprite itself is static apart from the two-frame jaw-chew animation.
+ * sprite itself is static apart from the two-frame jaw-chew animation;
+ * direction flips occasionally (mirrored sprite).
  */
 function renderBigGoat(
   leafTop: number, leafLeft: number, leafWidth: number, leafHeight: number,
   headerRows: number, cursorRow: number, scrollRow: number, dataRows: number,
 ): string {
   if (!_goat) { return ""; }
-  const frame = BIG_FRAMES[_goat.frame % BIG_FRAMES.length];
+  const frameSet = _goat.dir === "left" ? BIG_FRAMES_LEFT : BIG_FRAMES;
+  const frame = frameSet[_goat.frame % frameSet.length];
   // If the user's cursor is in the lower half of visible rows, anchor the
   // goat at the top instead so it never covers the cell they're on.
   const cursorRel = cursorRow - scrollRow;
@@ -416,7 +458,7 @@ function renderBigGoat(
     // Clip to pane right edge so we don't bleed into another pane.
     const maxChars = Math.max(0, leafWidth - 1);
     const clipped = line.slice(0, maxChars);
-    out += MOVE_TO(sr, leafLeft + 1) + clipped;
+    out += emitTransparentLine(sr, leafLeft + 1, clipped);
   }
   return out;
 }

@@ -2575,10 +2575,12 @@ describe("ConsoleClient", function() {
       }
       assert.isAtLeast(getGoat()!.rowIdx, 1);
       const out = renderGoatOverlay(s, 0, 24, 80);
-      // Compact sprite: curly-horn line ))_(( and ear+eye line.
+      // Curly horn arch:
       assert.match(out, /\)\)_\(\(/, "overlay should include the curly horns");
-      assert.match(out, /\^0 0\^|\^o o\^/,
-        "overlay should include the sprite's ears + eyes");
+      // Transparent rendering splits `^0 0^` into `^0` and `0^` (separated by
+      // a space that's skipped), so check both pieces are present.
+      assert.match(out, /\^(0|o)/, "overlay should include left ear+eye");
+      assert.match(out, /(0|o)\^/, "overlay should include right ear+eye");
     });
 
     it("records a trail across multiple steps", function() {
