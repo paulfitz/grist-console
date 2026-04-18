@@ -4,6 +4,7 @@ const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
 const DIM = `${ESC}2m`;
 const REVERSE = `${ESC}7m`;
+const UNDERLINE = `${ESC}4m`;
 // Green on black, like a phosphor monitor
 const GREEN_FG = `${ESC}32m`;
 const BRIGHT_GREEN_FG = `${ESC}92m`;
@@ -19,7 +20,21 @@ const DIM_AMBER_FG = `${ESC}38;5;172m`;    // dimmer amber/dark orange
 const BLACK_FG = `${ESC}30m`;
 const DARK_GRAY_FG = `${ESC}90m`;
 const WHITE_BG = `${ESC}47m`;
-const UNDERLINE = `${ESC}4m`;
+// DOS / CP437 palette: bright yellow on blue, cyan labels, gray screen
+const YELLOW_FG = `${ESC}93m`;
+const CYAN_FG = `${ESC}36m`;
+const GRAY_FG = `${ESC}37m`;
+const DARK_BLUE_BG = `${ESC}48;5;18m`;     // 256-color: deep navy
+const BRIGHT_BLUE_BG = `${ESC}48;5;21m`;   // 256-color: IBM-blue
+// Matrix palette: scanning-line greens
+const MATRIX_GREEN = `${ESC}38;5;46m`;     // pure phosphor green
+const MATRIX_DIM = `${ESC}38;5;28m`;       // muted green for trails
+const MATRIX_BRIGHT = `${ESC}38;5;118m`;   // highlight green
+const BLACK_BG = `${ESC}40m`;
+// Commodore 64 palette: light blue on navy, pastel accents
+const C64_LIGHT_BLUE = `${ESC}38;5;111m`;  // approx C64 "light blue" #8EAFDF
+const C64_WHITE = `${ESC}38;5;255m`;
+const C64_NAVY_BG = `${ESC}48;5;19m`;      // approx C64 "blue" #4242B4
 
 /**
  * A theme controls all visual styling: ANSI formatting, box-drawing characters,
@@ -82,6 +97,10 @@ export const defaultTheme: Theme = {
  * VisiCalc theme: green phosphor monitor with the classic "inverted L" frame.
  * Status line, column headers, and row numbers are all inverse video (the L).
  * Data cells are plain green on black. No cell separators, no header sep line.
+ *
+ * The title format evokes the Apple II VisiCalc status row: a blinking-cell
+ * indicator (`!`) and the global recalc arrow (`C` = column-major). Those are
+ * fixed for now -- the point is the look.
  */
 export const visicalcTheme: Theme = {
   titleBar: (text) => GREEN_FG + REVERSE + text + RESET,
@@ -103,8 +122,102 @@ export const visicalcTheme: Theme = {
   headerSepLine: false,
   screenBg: "",
 
-  titleFormat: (label, detail) => ` ${label} ${detail} `,
-  pickerTitleFormat: (label) => ` ${label} `,
+  // The slash prefix is VisiCalc's command indicator; C = column-major
+  // recalc order; ! = cursor-direction marker. Static for now, but the
+  // silhouette matches the real status row.
+  titleFormat: (label, detail) => ` /${label}${detail ? " " + detail : ""}   C !`,
+  pickerTitleFormat: (label) => ` /${label}   C !`,
+};
+
+/**
+ * DOS theme: IBM PC / Norton-Commander vibes. CP437 double-line borders,
+ * yellow-on-blue title chrome, bright-cyan column headers, white-on-blue
+ * data cells, deep-blue full-screen background. The `titleFormat` wraps
+ * the label in `╡ ╞` frame-filler arms -- the same decoration MS-DOS apps
+ * used to break up their menu bars.
+ */
+export const dosTheme: Theme = {
+  titleBar: (text) => YELLOW_FG + BOLD + BRIGHT_BLUE_BG + text + RESET,
+  titleBarDim: (text) => GRAY_FG + BRIGHT_BLUE_BG + text + RESET,
+  columnHeader: (text) => BRIGHT_CYAN_FG + BOLD + BRIGHT_BLUE_BG + text + RESET,
+  rowNumber: (text) => YELLOW_FG + BRIGHT_BLUE_BG + text + RESET,
+  cursor: (text) => BLACK_FG + `${ESC}47m` + text + RESET,
+  fieldLabel: (text) => GRAY_FG + BRIGHT_BLUE_BG + text + RESET,
+  fieldLabelActive: (text) => YELLOW_FG + BOLD + BRIGHT_BLUE_BG + text + RESET,
+  helpBar: (text) => BLACK_FG + `${ESC}46m` + text + RESET,   // black on cyan -- DOS help line
+  pickerSelected: (text) => BLACK_FG + `${ESC}47m` + text + RESET,
+
+  colSeparator: " \u2551 ",   // ║
+  headerSeparator: " \u2551 ", // ║
+  rowSepChar: "\u2550",        // ═
+  crossChar: "\u256C",         // ╬
+  borderHoriz: "\u2550",       // ═
+  borderVert: "\u2551",        // ║
+  headerSepLine: true,
+  screenBg: BRIGHT_BLUE_BG + WHITE_FG,
+
+  titleFormat: (label, detail) => `\u2561 ${label}${detail ? " " + detail : ""} \u255E`, // ╡ ... ╞
+  pickerTitleFormat: (label) => `\u2561 ${label} \u255E`,
+};
+
+/**
+ * Matrix theme: falling-green-rain aesthetic. Shade-block row separators
+ * (`▓`) give the grid a dense, scanning-line texture; column headers glow
+ * (bright-green + bold + underline) like the "wake me up" prompt; the
+ * title bar uses `//` double-slash bookends instead of ` `, so every pane
+ * has a touch of terminal-BBS decoration.
+ */
+export const matrixTheme: Theme = {
+  titleBar: (text) => MATRIX_BRIGHT + REVERSE + BOLD + text + RESET,
+  titleBarDim: (text) => MATRIX_DIM + REVERSE + text + RESET,
+  columnHeader: (text) => MATRIX_BRIGHT + BOLD + UNDERLINE + text + RESET,
+  rowNumber: (text) => MATRIX_DIM + text + RESET,
+  cursor: (text) => BLACK_FG + `${ESC}102m` + text + RESET, // black on bright green
+  fieldLabel: (text) => MATRIX_DIM + text + RESET,
+  fieldLabelActive: (text) => MATRIX_BRIGHT + BOLD + text + RESET,
+  helpBar: (text) => MATRIX_GREEN + BOLD + text + RESET,
+  pickerSelected: (text) => BLACK_FG + `${ESC}102m` + text + RESET,
+
+  colSeparator: MATRIX_DIM + " \u2502 " + RESET,
+  headerSeparator: MATRIX_DIM + " \u2502 " + RESET,
+  rowSepChar: "\u2593",        // ▓ -- dense phosphor trail
+  crossChar: "\u2588",         // █ -- full block at intersections
+  borderHoriz: "\u2592",       // ▒ -- medium shade between panes
+  borderVert: "\u2592",
+  headerSepLine: true,
+  screenBg: BLACK_BG + MATRIX_GREEN,
+
+  titleFormat: (label, detail) => `// ${label}${detail ? " " + detail : ""} //`,
+  pickerTitleFormat: (label) => `// ${label} //`,
+};
+
+/**
+ * Commodore 64 theme: light blue on navy, echoing the startup screen.
+ * Borders use block quadrants (▖▗▘▝) to hint at PETSCII's pixel-art grid.
+ * Title format adds stars (★) like a READY prompt banner.
+ */
+export const c64Theme: Theme = {
+  titleBar: (text) => C64_WHITE + BOLD + C64_NAVY_BG + text + RESET,
+  titleBarDim: (text) => C64_LIGHT_BLUE + C64_NAVY_BG + text + RESET,
+  columnHeader: (text) => C64_WHITE + BOLD + C64_NAVY_BG + text + RESET,
+  rowNumber: (text) => C64_LIGHT_BLUE + C64_NAVY_BG + text + RESET,
+  cursor: (text) => `${ESC}48;5;111m${ESC}30m` + text + RESET,  // black on light-blue
+  fieldLabel: (text) => C64_LIGHT_BLUE + C64_NAVY_BG + text + RESET,
+  fieldLabelActive: (text) => C64_WHITE + BOLD + C64_NAVY_BG + text + RESET,
+  helpBar: (text) => C64_WHITE + BOLD + C64_NAVY_BG + text + RESET,
+  pickerSelected: (text) => C64_NAVY_BG + `${ESC}48;5;111m` + `${ESC}30m` + text + RESET,
+
+  colSeparator: " \u2595 ",    // ▕ right-half block
+  headerSeparator: " \u2595 ",
+  rowSepChar: "\u2581",        // ▁ one eighth block (low)
+  crossChar: "\u258F",         // ▏ left-eighth block
+  borderHoriz: "\u2584",       // ▄ lower half
+  borderVert: "\u258C",        // ▌ left half
+  headerSepLine: true,
+  screenBg: C64_NAVY_BG + C64_LIGHT_BLUE,
+
+  titleFormat: (label, detail) => `\u2605 ${label}${detail ? " " + detail : ""} \u2605`, // ★
+  pickerTitleFormat: (label) => `\u2605 ${label} \u2605`,
 };
 
 /**
@@ -293,6 +406,9 @@ const themes: Record<string, Theme> = {
   default: defaultTheme,
   visicalc: visicalcTheme,
   lotus: lotus123Theme,
+  dos: dosTheme,
+  matrix: matrixTheme,
+  c64: c64Theme,
   amber: amberTheme,
   paper: paperTheme,
   rainbow: rainbowTheme,

@@ -7,10 +7,11 @@ import {
 } from "../src/ConsoleLayout.js";
 import { createInitialState, PaneState } from "../src/ConsoleAppState.js";
 import { render } from "../src/ConsoleRenderer.js";
-import { displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleDisplay.js";
+import { displayWidth, flattenToLine, applyChoiceColor, editWindow, stripAnsi } from "../src/ConsoleDisplay.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { getVisualPaneOrder, clearViewState } from "../src/ConsoleMain.js";
+import { getThemeNames, getTheme } from "../src/ConsoleTheme.js";
 import {
   applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter,
   applyAllSectionLinks,
@@ -2427,6 +2428,41 @@ describe("ConsoleClient", function() {
       handleKeypress(Buffer.from([0x1b]), s);
       assert.notEqual(s.mode, "editing");
     });
+  });
+
+  describe("themes", function() {
+    // Smoke test: every registered theme should render a grid and a picker
+    // without throwing, and produce non-empty output with the data visible.
+    // Covers new themes (dos / matrix / c64) alongside the originals.
+    for (const name of getThemeNames()) {
+      it(`theme '${name}' renders grid + picker without errors`, function() {
+        const theme = getTheme(name);
+
+        // Grid render
+        const grid = createInitialState("t", theme);
+        grid.mode = "grid";
+        grid.currentTableId = "People";
+        grid.panes = [makePane({
+          columns: [{ colId: "Name", type: "Text", label: "Name" }],
+          rowIds: [1, 2],
+          colValues: { Name: ["Alice", "Bob"] },
+        })];
+        grid.focusedPane = 0;
+        // Rainbow-style themes inject ANSI between characters, so search
+        // the ANSI-stripped output for the substring.
+        const gridText = stripAnsi(render(grid));
+        assert.include(gridText, "Alice");
+        assert.include(gridText, "Bob");
+
+        // Picker render
+        const picker = createInitialState("t", theme);
+        picker.mode = "table_picker";
+        picker.tableIds = ["People", "Tasks"];
+        const pickText = stripAnsi(render(picker));
+        assert.include(pickText, "People");
+        assert.include(pickText, "Tasks");
+      });
+    }
   });
 
   describe("clearViewState", function() {

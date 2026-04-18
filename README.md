@@ -101,8 +101,11 @@ Press `T` to cycle through themes, or use `--theme <name>`:
 | Theme | Description |
 |-------|-------------|
 | `default` | Standard terminal look — bold headers, Unicode box-drawing |
-| `visicalc` | Green phosphor with inverse-video "inverted L" frame |
+| `visicalc` | Green phosphor with inverse-video "inverted L" frame and a `/slash  C !` status chrome |
 | `lotus` | White on blue, Lotus 1-2-3 style |
+| `dos` | IBM PC / Norton Commander — CP437 double-line borders (`╔═╗║╚╝╠╣╦╩╬`), yellow-on-blue chrome, `╡ ╞` frame fillers |
+| `matrix` | Falling phosphor green on black — shade-block row separators (`▓█`), glowing underlined column headers, `//` title bookends |
+| `c64` | Commodore 64 — light-blue-on-navy, PETSCII-ish block-quadrant borders, `★` title stars |
 | `amber` | Amber phosphor VT220/VAX terminal |
 | `paper` | Dark text on white background, like a printed spreadsheet |
 | `rainbow` | Every element a different color. Festive. |
