@@ -23,35 +23,38 @@ interface UndoActionGroup {
 
 /**
  * Record an action-group broadcast that originated from our own client
- * (fromSelf=true).
+ * (fromSelf=true). Mirrors `pushAction` in the web client's UndoStack:
+ * the broadcast is authoritative for both stack contents AND pointer
+ * position, so executeUndo / executeRedo never touch the pointer
+ * themselves. This keeps the local state consistent even when the user
+ * fires a fresh edit while an undo/redo is still in flight (the server
+ * orders the broadcasts causally, and we replay that ordering verbatim).
  *
- * Identifies what kind of confirmation this is by the broadcast's own fields,
- * not by a "next-arriving" flag -- otherwise a fresh edit's broadcast that
- * raced ahead of a pending redo's broadcast would be misclassified. Grist's
- * applyUserActionsById echoes back the original action's number as
- * `otherId`; fresh applyUserActions calls leave it 0/undefined.
+ * `ag.otherId` echoes back the actionNum that an undo/redo targeted;
+ * fresh edits leave it 0/undefined.
  */
 export function handleOwnActionGroup(state: AppState, ag: UndoActionGroup): void {
   if (!ag.actionNum || !ag.actionHash) { return; }
-  if (ag.isUndo) {
-    // Undo confirmation. executeUndo already decremented the pointer.
+  const otherIndex = ag.otherId
+    ? state.undoStack.findIndex(e => e.actionNum === ag.otherId)
+    : -1;
+
+  if (otherIndex >= 0) {
+    // Undo/redo of an action this session knows about. Pointer goes to
+    // the entry index for an undo (so the next undo would step further
+    // back), or just past it for a redo.
+    state.undoPointer = ag.isUndo ? otherIndex : otherIndex + 1;
     return;
   }
-  if (ag.otherId && ag.otherId > 0) {
-    // Redo confirmation -- find the matching stack entry by its actionNum
-    // and advance the pointer past it. Race-free: identity-based, not
-    // arrival-order based.
-    const idx = state.undoStack.findIndex(e => e.actionNum === ag.otherId);
-    if (idx >= 0) {
-      state.undoPointer = Math.max(state.undoPointer, idx + 1);
-    }
-    // If the otherId isn't in our stack, drop it -- it's neither a fresh
-    // edit nor a redo we issued, so we shouldn't push it.
-    return;
-  }
-  // New edit: trim any redo entries (they've been invalidated) and push
+
+  // Fresh edit, or undo/redo of an action no longer in our stack
+  // (off the bottom after capping, or trimmed by a more recent edit).
+  // Bury any redo entries -- a fresh edit invalidates the redo tail --
+  // then push only when this isn't itself an undo/redo we can't track.
   state.undoStack = state.undoStack.slice(0, state.undoPointer);
-  state.undoStack.push({ actionNum: ag.actionNum, actionHash: ag.actionHash });
+  if (!ag.otherId) {
+    state.undoStack.push({ actionNum: ag.actionNum, actionHash: ag.actionHash });
+  }
   state.undoPointer = state.undoStack.length;
   // Cap stack size to avoid unbounded growth
   const MAX = 100;
@@ -77,12 +80,13 @@ export async function executeUndo(state: AppState, conn: ConsoleConnection): Pro
     return;
   }
   try {
+    // The pointer move happens in handleOwnActionGroup when the broadcast
+    // arrives with isUndo=true and otherId=entry.actionNum. Trusting the
+    // broadcast keeps state consistent even if the user fires a fresh
+    // edit while this RPC is still in flight.
     await conn.applyUserActionsById(
       [entry.actionNum], [entry.actionHash], true, { otherId: entry.actionNum },
     );
-    // The undo broadcast has isUndo=true so the handler doesn't touch the
-    // stack; we manage the pointer here.
-    state.undoPointer--;
     state.statusMessage = "Undone";
   } catch (e: any) {
     state.statusMessage = `Undo failed: ${e.message}`;

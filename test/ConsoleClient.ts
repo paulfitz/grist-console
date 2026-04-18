@@ -1777,53 +1777,84 @@ describe("ConsoleClient", function() {
       assert.equal(s.undoPointer, 3);
     });
 
-    it("ignores undo confirmations (isUndo=true)", function() {
+    it("undo broadcast moves pointer to the entry being undone (matched by otherId)", function() {
       const s = freshState();
       handleOwnActionGroup(s, ag(1));
       handleOwnActionGroup(s, ag(2));
-      // Simulate user doing undo: pointer moved by executeUndo
-      s.undoPointer = 1;
-      // Undo broadcast arrives with isUndo=true
-      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true }));
+      // Pointer starts at 2 (after both pushes). User presses undo.
+      // Broadcast arrives with isUndo=true and otherId=2 (the action being undone).
+      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true, otherId: 2 }));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
+      // Pointer set to the index of the undone entry (1), so the next
+      // undo would step to entry at index 0.
+      assert.equal(s.undoPointer, 1);
+    });
+
+    it("undo broadcast for an unknown action falls through to the trim+no-push path", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      // Server confirms an undo for actionNum=99 -- not in our stack
+      // (capped off, or from a prior session). otherId is set, so we
+      // don't push it; trim to current pointer is a no-op.
+      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true, otherId: 99 }));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
+      assert.equal(s.undoPointer, 2);
+    });
+
+    it("redo broadcast advances pointer past the entry it redid (matched by otherId)", function() {
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));
+      handleOwnActionGroup(s, ag(2));
+      // User undid both -- broadcasts moved pointer to 0
+      handleOwnActionGroup(s, ag(98, "h98", { isUndo: true, otherId: 2 }));
+      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true, otherId: 1 }));
+      assert.equal(s.undoPointer, 0);
+      // User presses redo. Broadcast for the redo carries otherId=1 (the
+      // original action's actionNum) and a new actionNum (10).
+      handleOwnActionGroup(s, ag(10, "h10", { otherId: 1 }));
+      // Stack unchanged; pointer set to the index after the redone entry.
       assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
       assert.equal(s.undoPointer, 1);
     });
 
-    it("redo broadcast advances pointer (matched by otherId)", function() {
+    it("server's causal broadcast order keeps state consistent with concurrent " +
+       "fresh edits", function() {
+      // User presses 'u' to undo C, then 'a' to add a new edit Z, both
+      // before 'u' has resolved. Server processes them in causal order
+      // and broadcasts in that order. We just replay the broadcasts.
+      const s = freshState();
+      handleOwnActionGroup(s, ag(1));   // A
+      handleOwnActionGroup(s, ag(2));   // B
+      handleOwnActionGroup(s, ag(3));   // C
+      assert.equal(s.undoPointer, 3);
+
+      // Broadcast 1: undo of C arrives. Pointer drops to 2.
+      handleOwnActionGroup(s, ag(50, "h50", { isUndo: true, otherId: 3 }));
+      assert.equal(s.undoPointer, 2);
+
+      // Broadcast 2: fresh edit Z arrives. Trim slice(0, 2)=[A, B];
+      // push Z; pointer=3. Crucially, C is gone -- it was undone, then
+      // a new edit invalidated the redo tail.
+      handleOwnActionGroup(s, ag(60, "h60"));
+      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2, 60]);
+      assert.equal(s.undoPointer, 3);
+    });
+
+    it("redo of an action no longer in the stack is silently dropped", function() {
       const s = freshState();
       handleOwnActionGroup(s, ag(1));
       handleOwnActionGroup(s, ag(2));
       // User undid both: pointer=0
-      s.undoPointer = 0;
-      // User presses redo. Broadcast for the redo carries otherId=1 (the
-      // original action's actionNum) and a new actionNum (10).
-      handleOwnActionGroup(s, ag(10, "h10", { otherId: 1 }));
-      // Stack should be unchanged; pointer advances past entry 1.
-      assert.deepEqual(s.undoStack.map(e => e.actionNum), [1, 2]);
-      assert.equal(s.undoPointer, 1);
-    });
-
-    it("race: a fresh edit's broadcast arriving before a pending redo's broadcast " +
-       "is correctly classified", function() {
-      // The whole point of the otherId-based design: even if broadcasts
-      // arrive in the "wrong" order, each is identified by content, not
-      // arrival timing. Previously a flag-based design misclassified
-      // whichever broadcast arrived first as the redo.
-      const s = freshState();
-      handleOwnActionGroup(s, ag(1));
-      handleOwnActionGroup(s, ag(2));
-      s.undoPointer = 0; // after two undos
-
-      // User presses redo (in flight). Then user immediately makes a
-      // fresh edit (also in flight). The fresh edit's broadcast arrives
-      // first -- it has no otherId, so it's classified as a fresh edit.
+      handleOwnActionGroup(s, ag(98, "h98", { isUndo: true, otherId: 2 }));
+      handleOwnActionGroup(s, ag(99, "h99", { isUndo: true, otherId: 1 }));
+      // User makes a fresh edit, trimming the redo tail.
       handleOwnActionGroup(s, ag(20, "h20"));
       assert.deepEqual(s.undoStack.map(e => e.actionNum), [20]);
-      assert.equal(s.undoPointer, 1);
 
-      // Now the redo's broadcast arrives (otherId=1). But entry 1 is no
-      // longer in the stack (it was trimmed by the fresh edit). The
-      // handler drops it -- no spurious push, no spurious advance.
+      // Now the (stale) redo broadcast for action 1 arrives -- entry 1
+      // is gone. otherId is set, so the no-push path triggers; pointer
+      // gets set to current stack length.
       handleOwnActionGroup(s, ag(21, "h21", { otherId: 1 }));
       assert.deepEqual(s.undoStack.map(e => e.actionNum), [20]);
       assert.equal(s.undoPointer, 1);
