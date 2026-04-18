@@ -11,7 +11,8 @@ import {
   extractPages, extractSectionsForView, extractFiltersForSection,
   getLayoutSpecForView, parseLayoutSpec, computeLayout, Rect,
 } from "../src/ConsoleLayout.js";
-import { applySortSpec, applySectionFilters, appendRowToColValues } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters } from "../src/ConsoleMain.js";
+import { appendRowToColValues } from "../src/ActionDispatcher.js";
 import { computeInsertManualSort } from "../src/ConsoleInput.js";
 
 function defaultVal(colType: string): any {

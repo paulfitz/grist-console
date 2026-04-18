@@ -1,4 +1,4 @@
-import { BulkColValues, ColumnInfo, DocAction } from "./types.js";
+import { BulkColValues, ColumnInfo } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
 import { render, showCursor, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleRenderer.js";
@@ -20,6 +20,7 @@ import { handleOwnActionGroup, executeUndo, executeRedo } from "./UndoStack.js";
 import {
   scheduleProbe, bufferInput, setReplayHandler, isProbing, printWidthReport,
 } from "./WidthProbe.js";
+import { applyDocActions } from "./ActionDispatcher.js";
 
 /**
  * Main entry point for the console client.
@@ -807,61 +808,6 @@ export function applySectionFilters(
   pane.colValues = newColValues;
 }
 
-/**
- * Return the default value for a column type when the server omits it from an AddRecord action.
- */
-function defaultForColumnType(colType: string): CellValue {
-  const baseType = colType.split(":")[0];
-  switch (baseType) {
-    case "Bool": return false;
-    case "Int":
-    case "Numeric":
-    case "ManualSortPos": return 0;
-    case "Text":
-    case "Choice": return "";
-    case "ChoiceList":
-    case "RefList": return null;
-    default: return null;
-  }
-}
-
-/**
- * Append a new row's values to a BulkColValues, covering every column in the
- * map (including hidden ones like manualSort). If a column has no value in
- * the action's colValues, fall back to the typed default for visible columns
- * and null for unknown (hidden) columns.
- */
-export function appendRowToColValues(
-  target: BulkColValues,
-  columns: ColumnInfo[],
-  colValues: Record<string, CellValue>,
-): void {
-  const typeByColId = new Map(columns.map(c => [c.colId, c.type]));
-  for (const colId of Object.keys(target)) {
-    const val = colValues[colId];
-    if (val !== undefined) {
-      target[colId].push(val);
-    } else {
-      const type = typeByColId.get(colId);
-      target[colId].push(type ? defaultForColumnType(type) : null);
-    }
-  }
-  // Also cover columns present in colValues but not yet in target (rare --
-  // typically the server's AddRecord includes only some columns).
-  for (const colId of Object.keys(colValues)) {
-    if (!target[colId]) {
-      // Pad previous rows with null, then add this value
-      const prevLen = Math.max(0, (target[Object.keys(target)[0]]?.length || 1) - 1);
-      target[colId] = new Array(prevLen).fill(null);
-      target[colId].push(colValues[colId]);
-    }
-  }
-}
-
-/**
- * Track an action group that originated from this client so we can undo it.
- * Undo actions themselves aren't pushed onto the stack -- they move the pointer.
- */
 function doRender(state: AppState): void {
   process.stdout.write(render(state));
 }
@@ -891,159 +837,3 @@ function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void
   conn.close().then(() => resolve()).catch(() => resolve());
 }
 
-/**
- * Print a report of characters that measured differently than string-width
- * predicted, along with terminal identification. Useful for reporting
- * upstream or to the string-width maintainers.
- */
-/**
- * Apply incoming DocActions to local state for live updates.
- * Routes each action to every pane whose table matches.
- */
-function applyDocActions(state: AppState, actions: DocAction[]): void {
-  for (const action of actions) {
-    const actionType = action[0];
-    const tableId = action[1] as string;
-    // Schema changes require a refresh; can't update in-place reliably
-    if (actionType === "AddColumn" || actionType === "RemoveColumn" ||
-        actionType === "RenameColumn" || actionType === "ModifyColumn") {
-      state.statusMessage = "Schema changed - press r to refresh";
-      continue;
-    }
-    for (const pane of state.panes) {
-      const paneTable = pane.sectionInfo?.tableId || state.currentTableId;
-      if (paneTable === tableId) {
-        applyDocActionToPane(pane, action);
-      }
-    }
-  }
-}
-
-/**
- * Apply a single DocAction to a pane's all-data (allRowIds + allColValues).
- * Visible rowIds/colValues will be rebuilt by applyAllSectionLinks afterward.
- */
-function applyDocActionToPane(pane: PaneState, action: DocAction): void {
-  const actionType = action[0];
-
-  switch (actionType) {
-    case "UpdateRecord": {
-      const [, , rowId, colValues] = action as any;
-      const allIdx = pane.allRowIds.indexOf(rowId);
-      if (allIdx === -1) { break; }
-      for (const [colId, value] of Object.entries(colValues)) {
-        if (pane.allColValues[colId]) {
-          pane.allColValues[colId][allIdx] = value as any;
-        }
-      }
-      // Also update visible colValues if the row is visible
-      const visIdx = pane.rowIds.indexOf(rowId);
-      if (visIdx >= 0) {
-        for (const [colId, value] of Object.entries(colValues)) {
-          if (pane.colValues[colId]) {
-            pane.colValues[colId][visIdx] = value as any;
-          }
-        }
-      }
-      break;
-    }
-    case "BulkUpdateRecord": {
-      const [, , rowIds, colValues] = action as any;
-      for (let i = 0; i < rowIds.length; i++) {
-        const allIdx = pane.allRowIds.indexOf(rowIds[i]);
-        if (allIdx === -1) { continue; }
-        for (const [colId, values] of Object.entries(colValues as Record<string, any[]>)) {
-          if (pane.allColValues[colId]) {
-            pane.allColValues[colId][allIdx] = values[i];
-          }
-        }
-        const visIdx = pane.rowIds.indexOf(rowIds[i]);
-        if (visIdx >= 0) {
-          for (const [colId, values] of Object.entries(colValues as Record<string, any[]>)) {
-            if (pane.colValues[colId]) {
-              pane.colValues[colId][visIdx] = values[i];
-            }
-          }
-        }
-      }
-      break;
-    }
-    case "AddRecord": {
-      const [, , rowId, colValues] = action as any;
-      pane.allRowIds.push(rowId);
-      pane.rowIds.push(rowId);
-      // Update ALL columns in allColValues/colValues (not just visible), so
-      // hidden columns like manualSort stay in sync. Out-of-sync arrays
-      // confuse sorting (e.g. new row with undefined manualSort sorts first).
-      appendRowToColValues(pane.allColValues, pane.columns, colValues);
-      appendRowToColValues(pane.colValues, pane.columns, colValues);
-      break;
-    }
-    case "BulkAddRecord": {
-      const [, , rowIds, colValues] = action as any;
-      for (let i = 0; i < rowIds.length; i++) {
-        pane.allRowIds.push(rowIds[i]);
-        pane.rowIds.push(rowIds[i]);
-        const perRow: Record<string, any> = {};
-        for (const colId of Object.keys(colValues)) {
-          perRow[colId] = colValues[colId]?.[i];
-        }
-        appendRowToColValues(pane.allColValues, pane.columns, perRow);
-        appendRowToColValues(pane.colValues, pane.columns, perRow);
-      }
-      break;
-    }
-    case "RemoveRecord": {
-      const [, , rowId] = action as any;
-      const allIdx = pane.allRowIds.indexOf(rowId);
-      if (allIdx >= 0) {
-        pane.allRowIds.splice(allIdx, 1);
-        for (const col of pane.columns) {
-          if (pane.allColValues[col.colId]) {
-            pane.allColValues[col.colId].splice(allIdx, 1);
-          }
-        }
-      }
-      const visIdx = pane.rowIds.indexOf(rowId);
-      if (visIdx >= 0) {
-        pane.rowIds.splice(visIdx, 1);
-        for (const col of pane.columns) {
-          if (pane.colValues[col.colId]) {
-            pane.colValues[col.colId].splice(visIdx, 1);
-          }
-        }
-      }
-      if (pane.cursorRow >= pane.rowIds.length && pane.cursorRow > 0) {
-        pane.cursorRow = pane.rowIds.length - 1;
-      }
-      break;
-    }
-    case "BulkRemoveRecord": {
-      const [, , rowIds] = action as any;
-      for (const rowId of rowIds) {
-        const allIdx = pane.allRowIds.indexOf(rowId);
-        if (allIdx >= 0) {
-          pane.allRowIds.splice(allIdx, 1);
-          for (const col of pane.columns) {
-            if (pane.allColValues[col.colId]) {
-              pane.allColValues[col.colId].splice(allIdx, 1);
-            }
-          }
-        }
-        const visIdx = pane.rowIds.indexOf(rowId);
-        if (visIdx >= 0) {
-          pane.rowIds.splice(visIdx, 1);
-          for (const col of pane.columns) {
-            if (pane.colValues[col.colId]) {
-              pane.colValues[col.colId].splice(visIdx, 1);
-            }
-          }
-        }
-      }
-      if (pane.cursorRow >= pane.rowIds.length && pane.cursorRow > 0) {
-        pane.cursorRow = pane.rowIds.length - 1;
-      }
-      break;
-    }
-  }
-}
