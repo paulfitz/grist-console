@@ -1,18 +1,16 @@
 import { BulkColValues, CellValue, ColumnInfo } from "./types.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
-import { BoxSpec, LayoutNode, PageInfo, SectionInfo, collectLeaves } from "./ConsoleLayout.js";
-import { Theme, defaultTheme } from "./ConsoleTheme.js";
-import stringWidth from "string-width";
-import { getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides } from "./termWidth.js";
+import { LayoutNode, collectLeaves } from "./ConsoleLayout.js";
+import { Theme } from "./ConsoleTheme.js";
+import {
+  CLEAR_LINE, MOVE_TO, HIDE_CURSOR, SHOW_CURSOR,
+  ENTER_ALT_SCREEN, EXIT_ALT_SCREEN,
+  displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
+  applyChoiceColor, editWindow,
+} from "./ConsoleDisplay.js";
 
-// ANSI escape codes (non-stylistic, always needed)
-const ESC = "\x1b[";
-const CLEAR_LINE = `${ESC}K`; // clear from cursor to end of line
-const MOVE_TO = (row: number, col: number) => `${ESC}${row + 1};${col + 1}H`;
-const HIDE_CURSOR = `${ESC}?25l`;
-const SHOW_CURSOR = `${ESC}?25h`;
-export const ENTER_ALT_SCREEN = `${ESC}?1049h`;
-export const EXIT_ALT_SCREEN = `${ESC}?1049l`;
+// Re-export the ANSI screen controls for consumers (ConsoleMain)
+export { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, displayWidth, flattenToLine, applyChoiceColor, editWindow };
 
 /**
  * Build the screen preamble: hide cursor, set background color, move to home.
@@ -25,96 +23,8 @@ function screenPreamble(t: Theme): string {
   return HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
 }
 
-export type AppMode = "table_picker" | "page_picker" | "grid" | "editing" | "confirm_delete" | "overlay" | "cell_viewer";
-
-export interface PaneState {
-  sectionInfo: SectionInfo;
-  columns: ColumnInfo[];
-  rowIds: number[];
-  allRowIds: number[];
-  colValues: BulkColValues;
-  allColValues: BulkColValues;
-  cursorRow: number;
-  cursorCol: number;
-  scrollRow: number;
-  scrollCol: number;
-}
-
-export interface AppState {
-  mode: AppMode;
-  tableIds: string[];
-  selectedTableIndex: number;
-  currentTableId: string;
-  columns: ColumnInfo[];
-  rowIds: number[];
-  colValues: BulkColValues;
-  cursorRow: number;
-  cursorCol: number;
-  scrollRow: number;
-  scrollCol: number;
-  editValue: string;
-  editCursorPos: number;
-  statusMessage: string;
-  docId: string;
-  // Multi-pane page layout state
-  pages: PageInfo[];
-  selectedPageIndex: number;
-  currentPageId: number;
-  panes: PaneState[];
-  layout: LayoutNode | null;
-  boxSpec: BoxSpec | null;
-  focusedPane: number;
-  // Collapsed widget tray
-  collapsedPaneIndices: number[];
-  overlayPaneIndex: number | null;
-  // Cell viewer
-  cellViewerContent: string;
-  cellViewerScroll: number;
-  cellViewerLinkIndex: number;  // -1 = no link selected, 0+ = selected link
-  // Undo/redo stack of (actionNum, actionHash) for actions this client made.
-  // Pointer indicates current position; items past pointer are "redo" candidates.
-  undoStack: Array<{ actionNum: number; actionHash: string }>;
-  undoPointer: number; // index of next action that would be undone; 0 = nothing to undo
-  // Theme
-  theme: Theme;
-}
-
-export function createInitialState(docId: string, theme?: Theme): AppState {
-  return {
-    mode: "table_picker",
-    tableIds: [],
-    selectedTableIndex: 0,
-    currentTableId: "",
-    columns: [],
-    rowIds: [],
-    colValues: {},
-    cursorRow: 0,
-    cursorCol: 0,
-    scrollRow: 0,
-    scrollCol: 0,
-    editValue: "",
-    editCursorPos: 0,
-    statusMessage: "",
-    docId,
-    // Multi-pane
-    pages: [],
-    selectedPageIndex: 0,
-    currentPageId: 0,
-    panes: [],
-    layout: null,
-    boxSpec: null,
-    focusedPane: 0,
-    collapsedPaneIndices: [],
-    overlayPaneIndex: null,
-    cellViewerContent: "",
-    cellViewerScroll: 0,
-    cellViewerLinkIndex: -1,
-    undoStack: [],
-    undoPointer: 0,
-    // Theme
-    theme: theme || defaultTheme,
-  };
-}
+export { AppMode, AppState, PaneState, createInitialState, isCardPane } from "./ConsoleAppState.js";
+import { AppMode, AppState, PaneState, isCardPane } from "./ConsoleAppState.js";
 
 interface ColLayout {
   colId: string;
@@ -141,179 +51,6 @@ function computeColLayout(state: AppState): ColLayout[] {
     width = Math.max(minWidth, Math.min(maxWidth, width));
     return { colId: col.colId, label: col.label, width };
   });
-}
-
-/**
- * Return the display width of a string in terminal cells.
- * Uses string-width, with terminal-measured overrides for known-problematic characters.
- */
-export function displayWidth(s: string): number {
-  // Strip ANSI escape codes before measuring
-  const clean = s.replace(/\x1b\[[0-9;]*m/g, "");
-  const flagPairDelta = getFlagPairDelta();
-  const vs16Delta = getVs16Delta();
-  // When no calibration has detected any discrepancy, trust string-width fully
-  // (handles composing terminals correctly for ZWJ, flags, etc.)
-  if (!hasOverrides() && flagPairDelta === 0 && vs16Delta === 0) {
-    return stringWidth(clean);
-  }
-
-  // Walk through the string char-by-char. For non-composing terminals this
-  // naturally gives the correct width (each emoji counted individually,
-  // ZWJ counted as 0). Flags need a delta since walking gives 1+1=2 for an
-  // RI pair, but the terminal may render them as 4 cells unjoined.
-  let w = 0;
-  const chars = [...clean];
-  let i = 0;
-  while (i < chars.length) {
-    // Check multi-codepoint overrides first, PREFERRING longer matches so that
-    // e.g. a "❤️" (2-char) override beats a bare "❤" (1-char) override, and
-    // a full ZWJ sequence beats individual components.
-    let matched = false;
-    for (let len = Math.min(chars.length - i, 8); len >= 2; len--) {
-      const candidate = chars.slice(i, i + len).join("");
-      const override = getTermWidthOverride(candidate);
-      if (override !== undefined) {
-        w += override;
-        i += len;
-        matched = true;
-        break;
-      }
-    }
-    if (matched) { continue; }
-
-    // Regional-indicator pair (flag emoji) -- check BEFORE single-char overrides
-    const code = chars[i].codePointAt(0)!;
-    const isRI = code >= 0x1F1E6 && code <= 0x1F1FF;
-    if (isRI && i + 1 < chars.length) {
-      const nextCode = chars[i + 1].codePointAt(0)!;
-      if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
-        w += 2 + flagPairDelta;
-        i += 2;
-        continue;
-      }
-    }
-
-    // Character followed by VS16: handle as emoji-composed BEFORE single-char
-    // override, because the same base char can render differently with VS16
-    // (e.g. ❤ alone = 1 cell text, ❤+VS16 = 2 cells emoji).
-    if (i + 1 < chars.length && chars[i + 1].codePointAt(0) === 0xFE0F) {
-      w += stringWidth(chars[i] + chars[i + 1]) + vs16Delta;
-      i += 2;
-      continue;
-    }
-
-    // Single-char override, or fall back to string-width.
-    // For ZWJ sequences / skin tones, we walk char-by-char. This matches
-    // partial-compose and non-composing terminals naturally (e.g.
-    // 🧙+ZWJ+♀+VS16 = 2+0+1+0 = 3 cells). Fully-composing terminals get
-    // walked overcount, but the background probe catches and stores an
-    // override for the exact composed sequence.
-    const override = getTermWidthOverride(chars[i]);
-    if (override !== undefined) {
-      w += override;
-    } else {
-      w += stringWidth(chars[i]);
-    }
-    i++;
-  }
-  return w;
-}
-
-/**
- * Replace newlines and other control characters with spaces for single-line display.
- */
-export function flattenToLine(s: string): string {
-  return s.replace(/[\n\r\t]/g, " ");
-}
-
-/**
- * Truncate a string to fit within maxLen display cells.
- */
-function truncate(s: string, maxLen: number): string {
-  if (displayWidth(s) <= maxLen) { return s; }
-  // Binary-ish search: try progressively shorter slices
-  const chars = [...s]; // split into codepoints
-  let lo = 0;
-  let hi = chars.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (displayWidth(chars.slice(0, mid).join("")) + 1 <= maxLen) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return chars.slice(0, lo).join("") + "\u2026";
-}
-
-function padRight(s: string, width: number): string {
-  const w = displayWidth(s);
-  if (w >= width) { return s; }
-  return s + " ".repeat(width - w);
-}
-
-function padLeft(s: string, width: number): string {
-  const w = displayWidth(s);
-  if (w >= width) { return s; }
-  return " ".repeat(width - w) + s;
-}
-
-/**
- * Convert a hex color like "#2486FB" to an ANSI 24-bit color escape.
- */
-function hexToAnsi(hex: string, bg: boolean): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  if (isNaN(r) || isNaN(g) || isNaN(b)) { return ""; }
-  return bg ? `\x1b[48;2;${r};${g};${b}m` : `\x1b[38;2;${r};${g};${b}m`;
-}
-
-const ANSI_RESET = "\x1b[0m";
-
-/**
- * Apply choice color styling to a cell value string if the column has choiceOptions.
- */
-export function applyChoiceColor(formatted: string, value: CellValue, colType: string, widgetOpts?: Record<string, any>): string {
-  if (!widgetOpts?.choiceOptions) { return formatted; }
-  const baseType = colType.split(":")[0];
-  const opts = widgetOpts.choiceOptions as Record<string, { fillColor?: string; textColor?: string }>;
-
-  if (baseType === "Choice") {
-    const key = typeof value === "string" ? value : String(value);
-    const colors = opts[key];
-    if (!colors) { return formatted; }
-    let ansi = "";
-    if (colors.fillColor) { ansi += hexToAnsi(colors.fillColor, true); }
-    if (colors.textColor) { ansi += hexToAnsi(colors.textColor, false); }
-    if (!ansi) { return formatted; }
-    return ansi + formatted + ANSI_RESET;
-  }
-
-  if (baseType === "ChoiceList" && Array.isArray(value) && value[0] === "L") {
-    const items = value.slice(1) as string[];
-    const fullJoined = items.map(v => String(v)).join(", ");
-    // If the formatted string was truncated, we can't reliably color per-item
-    // while preserving alignment -- return plain formatted text instead.
-    if (formatted !== fullJoined) {
-      return formatted;
-    }
-    // Color each choice in the comma-separated list
-    const colored = items.map(item => {
-      const colors = opts[item];
-      if (!colors) { return String(item); }
-      let ansi = "";
-      if (colors.fillColor) { ansi += hexToAnsi(colors.fillColor, true); }
-      if (colors.textColor) { ansi += hexToAnsi(colors.textColor, false); }
-      if (!ansi) { return String(item); }
-      return ansi + String(item) + ANSI_RESET;
-    });
-    return colored.join(", ");
-  }
-
-  return formatted;
 }
 
 /**
@@ -362,40 +99,6 @@ function getStatusLine(state: AppState, termCols: number): string {
     return truncate(full, termCols);
   }
   return "";
-}
-
-/**
- * Return a visible window of the edit text that keeps the cursor in view,
- * plus the cursor's column offset within that window.
- */
-export function editWindow(editValue: string, cursorPos: number, width: number): { text: string; cursorOffset: number } {
-  const chars = [...editValue];
-  // Find the display width up to the cursor
-  const beforeCursor = chars.slice(0, cursorPos).join("");
-  const cursorDisplayPos = displayWidth(beforeCursor);
-
-  if (cursorDisplayPos < width) {
-    // Cursor fits -- show from the start, truncate at width
-    return { text: padRight(truncate(editValue, width), width), cursorOffset: cursorDisplayPos };
-  }
-
-  // Cursor is past visible area -- scroll so cursor is near the right edge
-  const margin = Math.max(1, Math.floor(width / 4));
-  const targetStart = cursorDisplayPos - width + margin;
-
-  // Find the character index where display width >= targetStart
-  let w = 0;
-  let startCharIdx = 0;
-  for (const ch of chars) {
-    if (w >= targetStart) { break; }
-    w += displayWidth(ch);
-    startCharIdx++;
-  }
-
-  const visible = chars.slice(startCharIdx).join("");
-  const truncated = truncate(visible, width);
-  const offsetInWindow = cursorDisplayPos - displayWidth(chars.slice(0, startCharIdx).join(""));
-  return { text: padRight(truncated, width), cursorOffset: Math.min(offsetInWindow, width - 1) };
 }
 
 function isNumericType(colType: string): boolean {
@@ -1065,9 +768,6 @@ function writeToBuffer(buf: string[][], row: number, col: number, text: string, 
   }
 }
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
-}
 
 function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRows: number, t: Theme): void {
   if (!node.children || node.children.length < 2) { return; }
@@ -1102,11 +802,6 @@ function drawBorders(node: LayoutNode, buf: string[][], termCols: number, termRo
   for (const child of node.children) {
     drawBorders(child, buf, termCols, termRows, t);
   }
-}
-
-export function isCardPane(pane: PaneState): boolean {
-  const pk = pane.sectionInfo.parentKey;
-  return pk === "single" || pk === "detail";
 }
 
 export function showCursor(): string {
