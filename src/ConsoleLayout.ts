@@ -1,6 +1,19 @@
 import { ColumnInfo } from "./types.js";
 
 /**
+ * Read a Grist meta table out of the openDoc metaTables blob. Each meta
+ * table is wire-encoded as ["TableData", tableId, [rowIds], {colId: [vals]}],
+ * so the rowIds live at index 2 and the column values at index 3.
+ *
+ * Returns null when the table isn't present (defensive against partial docs).
+ */
+export function readMetaTable(metaTables: any, name: string): { ids: number[]; vals: any } | null {
+  const data = metaTables?.[name];
+  if (!data) { return null; }
+  return { ids: data[2], vals: data[3] };
+}
+
+/**
  * Metadata types extracted from _metaTables.
  */
 export interface PageInfo {
@@ -46,30 +59,25 @@ export interface BoxSpec {
  * Extract sorted page list from metadata.
  */
 export function extractPages(metaTables: any): PageInfo[] {
-  const pagesData = metaTables._grist_Pages;
-  const viewsData = metaTables._grist_Views;
-  if (!pagesData || !viewsData) { return []; }
-
-  const pageIds: number[] = pagesData[2];
-  const pageVals = pagesData[3];
-  const viewIds: number[] = viewsData[2];
-  const viewVals = viewsData[3];
+  const pagesT = readMetaTable(metaTables, "_grist_Pages");
+  const viewsT = readMetaTable(metaTables, "_grist_Views");
+  if (!pagesT || !viewsT) { return []; }
 
   // Build a map from viewId to view name
   const viewNameMap = new Map<number, string>();
-  for (let i = 0; i < viewIds.length; i++) {
-    viewNameMap.set(viewIds[i], viewVals.name[i] || "");
+  for (let i = 0; i < viewsT.ids.length; i++) {
+    viewNameMap.set(viewsT.ids[i], viewsT.vals.name[i] || "");
   }
 
   const pages: Array<PageInfo & { pagePos: number }> = [];
-  for (let i = 0; i < pageIds.length; i++) {
-    const viewRef = pageVals.viewRef[i];
+  for (let i = 0; i < pagesT.ids.length; i++) {
+    const viewRef = pagesT.vals.viewRef[i];
     pages.push({
-      pageId: pageIds[i],
+      pageId: pagesT.ids[i],
       viewId: viewRef,
       name: viewNameMap.get(viewRef) || `View ${viewRef}`,
-      indentation: pageVals.indentation?.[i] || 0,
-      pagePos: pageVals.pagePos?.[i] || i,
+      indentation: pagesT.vals.indentation?.[i] || 0,
+      pagePos: pagesT.vals.pagePos?.[i] || i,
     });
   }
 
@@ -81,35 +89,30 @@ export function extractPages(metaTables: any): PageInfo[] {
  * Extract sections for a given view.
  */
 export function extractSectionsForView(metaTables: any, viewId: number): SectionInfo[] {
-  const sectionsData = metaTables._grist_Views_section;
-  const tablesData = metaTables._grist_Tables;
-  if (!sectionsData || !tablesData) { return []; }
-
-  const sectionIds: number[] = sectionsData[2];
-  const sectionVals = sectionsData[3];
-  const tableIds: number[] = tablesData[2];
-  const tableVals = tablesData[3];
+  const sectionsT = readMetaTable(metaTables, "_grist_Views_section");
+  const tablesT = readMetaTable(metaTables, "_grist_Tables");
+  if (!sectionsT || !tablesT) { return []; }
 
   // Build tableRef -> tableId map
   const tableIdMap = new Map<number, string>();
-  for (let i = 0; i < tableIds.length; i++) {
-    tableIdMap.set(tableIds[i], tableVals.tableId[i]);
+  for (let i = 0; i < tablesT.ids.length; i++) {
+    tableIdMap.set(tablesT.ids[i], tablesT.vals.tableId[i]);
   }
 
   const sections: SectionInfo[] = [];
-  for (let i = 0; i < sectionIds.length; i++) {
-    if (sectionVals.parentId[i] !== viewId) { continue; }
-    const tableRef = sectionVals.tableRef[i];
+  for (let i = 0; i < sectionsT.ids.length; i++) {
+    if (sectionsT.vals.parentId[i] !== viewId) { continue; }
+    const tableRef = sectionsT.vals.tableRef[i];
     sections.push({
-      sectionId: sectionIds[i],
+      sectionId: sectionsT.ids[i],
       tableRef,
       tableId: tableIdMap.get(tableRef) || "",
-      parentKey: sectionVals.parentKey[i] || "record",
-      title: sectionVals.title?.[i] || "",
-      linkSrcSectionRef: sectionVals.linkSrcSectionRef?.[i] || 0,
-      linkSrcColRef: sectionVals.linkSrcColRef?.[i] || 0,
-      linkTargetColRef: sectionVals.linkTargetColRef?.[i] || 0,
-      sortColRefs: sectionVals.sortColRefs?.[i] || "",
+      parentKey: sectionsT.vals.parentKey[i] || "record",
+      title: sectionsT.vals.title?.[i] || "",
+      linkSrcSectionRef: sectionsT.vals.linkSrcSectionRef?.[i] || 0,
+      linkSrcColRef: sectionsT.vals.linkSrcColRef?.[i] || 0,
+      linkTargetColRef: sectionsT.vals.linkTargetColRef?.[i] || 0,
+      sortColRefs: sectionsT.vals.sortColRefs?.[i] || "",
     });
   }
   return sections;
@@ -121,18 +124,15 @@ export function extractSectionsForView(metaTables: any, viewId: number): Section
 export function extractFieldsForSection(
   metaTables: any, sectionId: number
 ): Array<{ colRef: number; parentPos: number }> {
-  const fieldsData = metaTables._grist_Views_section_field;
-  if (!fieldsData) { return []; }
-
-  const fieldIds: number[] = fieldsData[2];
-  const fieldVals = fieldsData[3];
+  const fieldsT = readMetaTable(metaTables, "_grist_Views_section_field");
+  if (!fieldsT) { return []; }
 
   const fields: Array<{ colRef: number; parentPos: number }> = [];
-  for (let i = 0; i < fieldIds.length; i++) {
-    if (fieldVals.parentId[i] !== sectionId) { continue; }
+  for (let i = 0; i < fieldsT.ids.length; i++) {
+    if (fieldsT.vals.parentId[i] !== sectionId) { continue; }
     fields.push({
-      colRef: fieldVals.colRef[i],
-      parentPos: fieldVals.parentPos?.[i] || i,
+      colRef: fieldsT.vals.colRef[i],
+      parentPos: fieldsT.vals.parentPos?.[i] || i,
     });
   }
   fields.sort((a, b) => a.parentPos - b.parentPos);
@@ -143,29 +143,25 @@ export function extractFieldsForSection(
  * Resolve a column ref to column info.
  */
 export function getColumnInfo(metaTables: any, colRef: number): ColumnInfo | null {
-  const columnsData = metaTables._grist_Tables_column;
-  if (!columnsData) { return null; }
+  const colsT = readMetaTable(metaTables, "_grist_Tables_column");
+  if (!colsT) { return null; }
 
-  const colIds: number[] = columnsData[2];
-  const colVals = columnsData[3];
-
-  for (let i = 0; i < colIds.length; i++) {
-    if (colIds[i] === colRef) {
-      let widgetOptions: Record<string, any> | undefined;
-      try {
-        if (colVals.widgetOptions?.[i]) {
-          widgetOptions = JSON.parse(colVals.widgetOptions[i]);
-        }
-      } catch { /* ignore invalid JSON */ }
-      const visibleCol = colVals.visibleCol?.[i] || undefined;
-      return {
-        colId: colVals.colId[i],
-        type: colVals.type[i],
-        label: colVals.label?.[i] || colVals.colId[i],
-        widgetOptions,
-        visibleCol: visibleCol && visibleCol > 0 ? visibleCol : undefined,
-      };
-    }
+  for (let i = 0; i < colsT.ids.length; i++) {
+    if (colsT.ids[i] !== colRef) { continue; }
+    let widgetOptions: Record<string, any> | undefined;
+    try {
+      if (colsT.vals.widgetOptions?.[i]) {
+        widgetOptions = JSON.parse(colsT.vals.widgetOptions[i]);
+      }
+    } catch { /* ignore invalid JSON */ }
+    const visibleCol = colsT.vals.visibleCol?.[i] || undefined;
+    return {
+      colId: colsT.vals.colId[i],
+      type: colsT.vals.type[i],
+      label: colsT.vals.label?.[i] || colsT.vals.colId[i],
+      widgetOptions,
+      visibleCol: visibleCol && visibleCol > 0 ? visibleCol : undefined,
+    };
   }
   return null;
 }
@@ -185,18 +181,15 @@ export function getColIdByRef(metaTables: any, colRef: number): string {
 export function extractFiltersForSection(
   metaTables: any, sectionId: number
 ): Map<number, string> {
-  const filtersData = metaTables._grist_Filters;
-  if (!filtersData) { return new Map(); }
+  const filtersT = readMetaTable(metaTables, "_grist_Filters");
+  if (!filtersT) { return new Map(); }
 
-  const filterIds: number[] = filtersData[2];
-  const filterVals = filtersData[3];
   const result = new Map<number, string>();
-
-  for (let i = 0; i < filterIds.length; i++) {
-    if (filterVals.viewSectionRef[i] !== sectionId) { continue; }
-    const filter = filterVals.filter?.[i];
+  for (let i = 0; i < filtersT.ids.length; i++) {
+    if (filtersT.vals.viewSectionRef[i] !== sectionId) { continue; }
+    const filter = filtersT.vals.filter?.[i];
     if (filter) {
-      result.set(filterVals.colRef[i], filter);
+      result.set(filtersT.vals.colRef[i], filter);
     }
   }
   return result;
@@ -348,13 +341,11 @@ export function collectLeaves(node: LayoutNode): LayoutNode[] {
  * Get the layoutSpec for a given view from metadata.
  */
 export function getLayoutSpecForView(metaTables: any, viewId: number): string | undefined {
-  const viewsData = metaTables._grist_Views;
-  if (!viewsData) { return undefined; }
-  const viewIds: number[] = viewsData[2];
-  const viewVals = viewsData[3];
-  for (let i = 0; i < viewIds.length; i++) {
-    if (viewIds[i] === viewId) {
-      return viewVals.layoutSpec?.[i] || undefined;
+  const viewsT = readMetaTable(metaTables, "_grist_Views");
+  if (!viewsT) { return undefined; }
+  for (let i = 0; i < viewsT.ids.length; i++) {
+    if (viewsT.ids[i] === viewId) {
+      return viewsT.vals.layoutSpec?.[i] || undefined;
     }
   }
   return undefined;

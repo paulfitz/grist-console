@@ -1,5 +1,5 @@
 import { BulkColValues, ColumnInfo, DocAction, isHiddenCol } from "./types.js";
-import { extractFieldsForSection, getColumnInfo } from "./ConsoleLayout.js";
+import { extractFieldsForSection, getColumnInfo, readMetaTable } from "./ConsoleLayout.js";
 import WS from "ws";
 import fetch from "node-fetch";
 
@@ -158,20 +158,16 @@ export class ConsoleConnection {
    * Get the list of user tables in the document.
    */
   public getTableIds(): string[] {
-    if (!this._metaTables) { return []; }
-    const tablesData = this._metaTables._grist_Tables;
-    if (!tablesData) { return []; }
-    const tableIds: string[] = [];
-    const ids: number[] = tablesData[2];
-    const colVals: BulkColValues = tablesData[3];
-    const tableIdCol = colVals.tableId as string[];
-    for (let i = 0; i < ids.length; i++) {
-      const tid = tableIdCol[i];
+    const tablesT = readMetaTable(this._metaTables, "_grist_Tables");
+    if (!tablesT) { return []; }
+    const result: string[] = [];
+    for (let i = 0; i < tablesT.ids.length; i++) {
+      const tid: string = tablesT.vals.tableId[i];
       if (!tid.startsWith("GristSummary_") && !tid.startsWith("_grist_")) {
-        tableIds.push(tid);
+        result.push(tid);
       }
     }
-    return tableIds;
+    return result;
   }
 
   /**
@@ -258,25 +254,20 @@ export class ConsoleConnection {
   }
 
   private _getColumnsForTable(tableId: string): ColumnInfo[] {
-    if (!this._metaTables) { return []; }
-    const tablesData = this._metaTables._grist_Tables;
-    const columnsData = this._metaTables._grist_Tables_column;
-    if (!tablesData || !columnsData) { return []; }
+    const tablesT = readMetaTable(this._metaTables, "_grist_Tables");
+    const colsT = readMetaTable(this._metaTables, "_grist_Tables_column");
+    if (!tablesT || !colsT) { return []; }
 
     // Find the table's ref
-    const tableIds: string[] = tablesData[3].tableId;
-    const tableRefs: number[] = tablesData[2];
-    const tableRef = tableRefs[tableIds.indexOf(tableId)];
+    const tableRef = tablesT.ids[(tablesT.vals.tableId as string[]).indexOf(tableId)];
     if (tableRef === undefined) { return []; }
 
     // Collect column refs whose parent is this table, then resolve each
     // through the shared getColumnInfo helper for consistent parsing.
-    const colRefs: number[] = columnsData[2];
-    const colParentIds: number[] = columnsData[3].parentId;
     const columns: ColumnInfo[] = [];
-    for (let i = 0; i < colParentIds.length; i++) {
-      if (colParentIds[i] !== tableRef) { continue; }
-      const info = getColumnInfo(this._metaTables, colRefs[i]);
+    for (let i = 0; i < colsT.ids.length; i++) {
+      if (colsT.vals.parentId[i] !== tableRef) { continue; }
+      const info = getColumnInfo(this._metaTables, colsT.ids[i]);
       if (info && !isHiddenCol(info.colId)) {
         columns.push(info);
       }
