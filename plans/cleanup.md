@@ -1,5 +1,12 @@
 # grist-console cleanup plan
 
+> **Status: complete (2026-04-17).** Phases 1 through 4c landed plus
+> phases 5-10 added during execution (key-handler consolidation,
+> picker-key navigateList helper, multi-pane renderer extraction,
+> Commands extraction, three-agent simplify pass). Final file sizes:
+> ConsoleMain 519 (was 1440), ConsoleRenderer 382 (was 1114),
+> ConsoleInput 636 (was 961). Full test suite green at every commit.
+
 The project grew organically. This plan consolidates it into fewer, more
 cohesive modules and removes the single-pane/multi-pane duplication
 that pervades the code. Where sensible, module names rhyme with the
@@ -237,11 +244,20 @@ Consider deferring until after phase 3 is settled.
 
 ## Phase order summary
 
-1. Phase 1a: extract `UndoStack.ts` (safe)
-2. Phase 1b: extract `WidthProbe.ts` (safe)
-3. Phase 2a: extract `ConsoleAppState.ts` (safe)
-4. Phase 2b: extract `ConsoleDisplay.ts` (safe)
-5. Phase 3: unify pane state (behaviour-preserving but structural)
-6. Phase 4a: extract `ActionDispatcher.ts`
-7. Phase 4b: quick wins sweep
-8. Phase 4c (optional): extract `LinkingState.ts` if still useful
+1. ✅ Phase 1a: extract `UndoStack.ts` (safe)
+2. ✅ Phase 1b: extract `WidthProbe.ts` (safe)
+3. ✅ Phase 2a: extract `ConsoleAppState.ts` (safe)
+4. ✅ Phase 2b: extract `ConsoleDisplay.ts` (safe)
+5. ✅ Phase 3: unify pane state (behaviour-preserving but structural)
+6. ✅ Phase 4a: extract `ActionDispatcher.ts`
+7. ✅ Phase 4b: extractUrls + unify column-width math
+8. ✅ Phase 4c: extract `LinkingState.ts`
+9. ✅ Phase 5: consolidate grid + overlay key handlers (handleGridViewKey)
+10. ✅ Phase 6: clearViewState helper, drop overlay focusedPane swap
+11. ✅ Phase 7: navigateList helper for picker key handlers
+12. ✅ Phase 8: import state types from ConsoleAppState directly
+13. ✅ Phase 9: extract `ConsoleMultiPane.ts` buffer renderer
+14. ✅ Phase 10: extract `Commands.ts` (executeSaveEdit/AddRow/DeleteRow)
+15. ✅ Simplify pass: 3-agent review (reuse / quality / efficiency).
+    Results: getBaseType/paneTableId/paneTitle/writeTitleBar helpers,
+    Map-based BulkUpdateRecord lookups, displayWidth → stripAnsi.
