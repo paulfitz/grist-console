@@ -36,60 +36,121 @@ interface GoatState extends GoatPos {
 
 const MAX_TRAIL = 3;
 
-// Compact side-view goat sprite, inspired by ejm97's classic ASCII goat.
-// Each direction has three frames: two walking (alternating legs) and one
-// grazing (head down, eating). Cycling through them gives a natural
-// "wander - wander - nibble" rhythm.
-//
-// All frames are 4 rows × 8 cols. Padding with spaces keeps the right edge
-// stable so frame transitions don't jitter.
-const FRAMES_RIGHT: string[][] = [
-  // Walk, left legs forward
+// ---------------------------------------------------------------------------
+// Big goat -- Joan Stark's 12/96 goat.cow, used verbatim when the terminal is
+// tall enough. The face is at the upper-left, the back arches right with a
+// grazing grass arc (~^~^~^), legs reach down to a grass line (""...). No
+// cell-wandering in this mode: the goat is anchored at the pane bottom and
+// the two frames only nudge the jaw for a subtle chew.
+// ---------------------------------------------------------------------------
+const BIG_FRAMES: string[][] = [
+  // Frame A -- original, jaw closed
   [
-    "  ,__, >",
-    "  (--)_'",
-    "  /|  |\\",
-    "  /    \\",
+    "             / /",
+    "          (\\/_//`)",
+    "           /   '/",
+    "          0  0   \\",
+    "         /        \\",
+    "        /    __/   \\",
+    "       /,  _/ \\     \\_",
+    "       `-./ )  |     ~^~^~^~^~^~^~^~\\~.",
+    "           (   /                     \\_}",
+    "              |               /      |",
+    "              ;     |         \\      /",
+    "               \\/ ,/           \\    |",
+    "               / /~~|~|~~~~~~|~|\\   |",
+    "              / /   | |      | | `\\ \\",
+    "             / /    | |      | |   \\ \\",
+    "            / (     | |      | |    \\ \\",
+    "     jgs   /,_)    /__)     /__)   /,_/",
+    "    '''''\"\"\"\"\"'''\"\"\"\"\"\"'''\"\"\"\"\"\"''\"\"\"\"\"'''''",
   ],
-  // Walk, right legs forward
+  // Frame B -- jaw open (chewing): the `(   /` nose/mouth becomes `(  _/`
+  // and the grass arc loses one curl as if the goat just took a bite.
   [
-    "  ,__, >",
-    "  (--)_'",
-    "  \\|  |/",
-    "   \\  / ",
-  ],
-  // Grazing: head dipped to the ground, back arched
-  [
-    "         ",
-    "    ,__ >",
-    "   (\\_/)'",
-    "   /~~~~~",
+    "             / /",
+    "          (\\/_//`)",
+    "           /   '/",
+    "          0  0   \\",
+    "         /        \\",
+    "        /    __/   \\",
+    "       /,  _/ \\     \\_",
+    "       `-./ )  |     ~^~^~^~^~^~^~\\~.",
+    "           (  _/                    \\_}",
+    "              |               /      |",
+    "              ;     |         \\      /",
+    "               \\/ ,/           \\    |",
+    "               / /~~|~|~~~~~~|~|\\   |",
+    "              / /   | |      | | `\\ \\",
+    "             / /    | |      | |   \\ \\",
+    "            / (     | |      | |    \\ \\",
+    "     jgs   /,_)    /__)     /__)   /,_/",
+    "    '''''\"\"\"\"\"'''\"\"\"\"\"\"'''\"\"\"\"\"\"''\"\"\"\"\"'''''",
   ],
 ];
-const FRAMES_LEFT: string[][] = [
-  // Walk, right legs forward
+const BIG_HEIGHT = BIG_FRAMES[0].length;
+const BIG_WIDTH = Math.max(...BIG_FRAMES[0].map(l => l.length));
+
+// Pane must have at least this many visible data rows to show the big goat.
+// Otherwise we fall back to the compact sprite.
+const BIG_MIN_ROWS = BIG_HEIGHT + 4;
+
+// ---------------------------------------------------------------------------
+// Compact side-view goat -- used when the terminal is too small for the big
+// sprite. Variant 2 from goat-options.txt with curly horns (((__)))-ish
+// arches) AND small ears above the face. Walk / walk / graze cycle; left
+// and right facing variants.
+// ---------------------------------------------------------------------------
+const COMPACT_FRAMES_RIGHT: string[][] = [
+  // Walk, legs spread
   [
-    "< ,__,  ",
-    "`_(--)  ",
-    "/|  |\\  ",
-    "/    \\  ",
+    "   ))_((  ",
+    "  /^0 0^\\__",
+    "   \\_/    \\",
+    "   / \\   ||",
+    "   \" \"   \"\"",
   ],
-  // Walk, left legs forward
+  // Walk, legs crossed
   [
-    "< ,__,  ",
-    "`_(--)  ",
-    "\\|  |/  ",
-    " \\  /   ",
+    "   ))_((  ",
+    "  /^0 0^\\__",
+    "   \\_/    \\",
+    "   \\ /   ||",
+    "    \"    \"\"",
   ],
-  // Grazing: head dipped, back arched
+  // Grazing, head tipped down, grass at feet
   [
-    "         ",
-    "< __,    ",
-    "`(\\_/)   ",
-    "~~~~\\    ",
+    "    ))_((   ",
+    "   /^o o^\\__",
+    "   \\_/     \\_",
+    "    /~~~~~~~/",
+    "    \"       \"",
   ],
 ];
-const SPRITE_ROWS = FRAMES_RIGHT[0].length;
+const COMPACT_FRAMES_LEFT: string[][] = [
+  [
+    "   ))_((  ",
+    "__/^0 0^\\  ",
+    "  /    \\_/",
+    "  || / \\  ",
+    "  \"\"  \" \" ",
+  ],
+  [
+    "   ))_((  ",
+    "__/^0 0^\\  ",
+    "  /    \\_/",
+    "  || \\ /  ",
+    "  \"\"   \"  ",
+  ],
+  [
+    "     ))_((  ",
+    "  __/^o o^\\ ",
+    "_/    \\_/   ",
+    "\\~~~~~~~\\   ",
+    "\"       \"   ",
+  ],
+];
+const COMPACT_ROWS = COMPACT_FRAMES_RIGHT[0].length;
 // A full cycle is walk / walk / graze, so frame 2 of every 3 is the graze.
 const GRAZE_FRAME_MOD = 3;
 
@@ -131,7 +192,7 @@ export function stepGoat(state: AppState): boolean {
   // header/footer/chrome. Also leave a bottom margin so the 4-row
   // sprite doesn't get clipped against the footer.
   const termRows = process.stdout.rows || 24;
-  const visibleRows = Math.max(1, termRows - 6 - (SPRITE_ROWS - 1));
+  const visibleRows = Math.max(1, termRows - 6 - (COMPACT_ROWS - 1));
   const rowLow = pane.scrollRow;
   const rowHigh = Math.min(pane.rowIds.length, pane.scrollRow + visibleRows);
   const colLow = pane.scrollCol;
@@ -146,11 +207,11 @@ export function stepGoat(state: AppState): boolean {
        ..._goat.trail].slice(0, MAX_TRAIL)
     : [];
 
-  // The sprite is SPRITE_ROWS tall, so it extends down from the anchor
+  // The sprite is COMPACT_ROWS tall, so it extends down from the anchor
   // cell. Reject positions whose row band would cover the cursor row,
   // so the goat never obscures what the user is working on.
   const overlapsCursor = (r: number, c: number) =>
-    cursorR >= r && cursorR < r + SPRITE_ROWS && c === cursorC;
+    cursorR >= r && cursorR < r + COMPACT_ROWS && c === cursorC;
 
   const pickTeleport = (): GoatPos => {
     const rowRange = Math.max(1, rowHigh - rowLow);
@@ -244,9 +305,6 @@ export function renderGoatOverlay(
   // place. Skip them entirely.
   const pk = pane.sectionInfo?.parentKey;
   if (pk === "single" || pk === "detail" || pk === "chart") { return ""; }
-  // Goat scrolled out of view (user scrolled past it either way)?
-  if (_goat.rowIdx < pane.scrollRow) { return ""; }
-  if (_goat.colIdx < pane.scrollCol) { return ""; }
 
   // Resolve the pane's screen rectangle (leaf) and the column layout.
   let leafTop = trayHeight;
@@ -262,12 +320,25 @@ export function renderGoatOverlay(
     leafHeight = leaf.height;
   }
 
-  // The column layout drives horizontal positioning. Each cell consists
-  // of colSeparator + column-width characters.
   const t = state.theme;
   const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
   const rowNumWidth = Math.max(3, String(maxRowId).length);
   const headerRows = t.headerSepLine ? 3 : 2;
+  const dataRows = Math.max(0, leafHeight - headerRows);
+
+  // Big goat mode: pane is tall enough to hold the full jgs sprite with
+  // breathing room. Anchor at the pane's bottom edge (or top if cursor
+  // is in the lower half). Don't use the goat's wandering position --
+  // the big goat is parked, not ambling. Only the chew frame animates.
+  if (dataRows >= BIG_MIN_ROWS && leafWidth >= BIG_WIDTH + 2) {
+    return renderBigGoat(leafTop, leafLeft, leafWidth, leafHeight,
+                         headerRows, pane.cursorRow, pane.scrollRow, dataRows);
+  }
+
+  // Compact mode: the cell-wandering goat.
+  if (_goat.rowIdx < pane.scrollRow) { return ""; }
+  if (_goat.colIdx < pane.scrollCol) { return ""; }
+
   const colWidths = paneColWidths(pane);
 
   // Screen column for a given pane column index (top-left of that cell).
@@ -302,7 +373,7 @@ export function renderGoatOverlay(
   // starting below it. Frame cycle: walk / walk / graze. Left/right
   // frame set chosen by the goat's last horizontal move.
   if (_goat.rowIdx < pane.scrollRow) { return out; }
-  const frameSet = _goat.dir === "left" ? FRAMES_LEFT : FRAMES_RIGHT;
+  const frameSet = _goat.dir === "left" ? COMPACT_FRAMES_LEFT : COMPACT_FRAMES_RIGHT;
   const frame = frameSet[_goat.frame % GRAZE_FRAME_MOD];
   const anchorRow = cellScreenRow(_goat.rowIdx) - 1;
   const anchorCol = cellScreenCol(_goat.colIdx);
@@ -315,6 +386,37 @@ export function renderGoatOverlay(
     const clipped = line.slice(0, maxChars);
     if (clipped.length === 0) { continue; }
     out += MOVE_TO(sr, anchorCol) + clipped;
+  }
+  return out;
+}
+
+/**
+ * Paint the big jgs goat at the pane's bottom edge. If the cursor is in
+ * the lower half, paint at the top instead so we never cover it. The
+ * sprite itself is static apart from the two-frame jaw-chew animation.
+ */
+function renderBigGoat(
+  leafTop: number, leafLeft: number, leafWidth: number, leafHeight: number,
+  headerRows: number, cursorRow: number, scrollRow: number, dataRows: number,
+): string {
+  if (!_goat) { return ""; }
+  const frame = BIG_FRAMES[_goat.frame % BIG_FRAMES.length];
+  // If the user's cursor is in the lower half of visible rows, anchor the
+  // goat at the top instead so it never covers the cell they're on.
+  const cursorRel = cursorRow - scrollRow;
+  const anchorAtTop = cursorRel > dataRows / 2;
+  const firstRow = anchorAtTop
+    ? leafTop + headerRows
+    : leafTop + leafHeight - frame.length;
+  let out = "";
+  for (let r = 0; r < frame.length; r++) {
+    const sr = firstRow + r;
+    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
+    const line = frame[r];
+    // Clip to pane right edge so we don't bleed into another pane.
+    const maxChars = Math.max(0, leafWidth - 1);
+    const clipped = line.slice(0, maxChars);
+    out += MOVE_TO(sr, leafLeft + 1) + clipped;
   }
   return out;
 }
