@@ -29,6 +29,7 @@ import { BulkColValues, DocAction } from "../src/types.js";
 import {
   SERVER_URL, API_KEY,
   createTestDoc, createPrivateTestDoc, applyUserActions, addRows, updateRows,
+  withConnection,
 } from "./testServer.js";
 
 describe("ConsoleConnection (integration)", function() {
@@ -54,21 +55,15 @@ describe("ConsoleConnection (integration)", function() {
   });
 
   it("connects via WebSocket and fetches table list", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const tableIds = conn.getTableIds();
       assert.include(tableIds, "People");
       assert.include(tableIds, "Table1");
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("fetches table data with column metadata", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const data = await conn.fetchTable("People");
       assert.equal(data.tableId, "People");
       assert.equal(data.rowIds.length, 3);
@@ -84,49 +79,44 @@ describe("ConsoleConnection (integration)", function() {
 
       assert.deepEqual(data.colValues.Name, ["Alice", "Bob", "Charlie"]);
       assert.deepEqual(data.colValues.Age, [30, 25, 35]);
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("applies cell edit via applyUserActions", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      await conn.applyUserActions([
-        ["UpdateRecord", "People", 1, { Name: "Alicia" }],
-      ]);
-      const data = await conn.fetchTable("People");
-      assert.equal(data.colValues.Name[0], "Alicia");
+      await withConnection(docId, async (conn) => {
+        await conn.applyUserActions([
+          ["UpdateRecord", "People", 1, { Name: "Alicia" }],
+        ]);
+        const data = await conn.fetchTable("People");
+        assert.equal(data.colValues.Name[0], "Alicia");
+      });
     } finally {
       // Restore original
       await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
-      await conn.close();
     }
   });
 
   it("adds a row and receives the new data", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      await conn.applyUserActions([
-        ["AddRecord", "People", null, { Name: "Diana", Age: 28 }],
-      ]);
-      const data = await conn.fetchTable("People");
-      assert.include(data.colValues.Name as string[], "Diana");
+      await withConnection(docId, async (conn) => {
+        await conn.applyUserActions([
+          ["AddRecord", "People", null, { Name: "Diana", Age: 28 }],
+        ]);
+        const data = await conn.fetchTable("People");
+        assert.include(data.colValues.Name as string[], "Diana");
+      });
     } finally {
       // Clean up the added row
-      const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      await conn2.connect();
-      const data = await conn2.fetchTable("People");
-      const idx = (data.colValues.Name as string[]).indexOf("Diana");
-      if (idx >= 0) {
-        await conn2.applyUserActions([
-          ["RemoveRecord", "People", data.rowIds[idx]],
-        ]);
-      }
-      await conn2.close();
-      await conn.close();
+      await withConnection(docId, async (conn) => {
+        const data = await conn.fetchTable("People");
+        const idx = (data.colValues.Name as string[]).indexOf("Diana");
+        if (idx >= 0) {
+          await conn.applyUserActions([
+            ["RemoveRecord", "People", data.rowIds[idx]],
+          ]);
+        }
+      });
     }
   });
 
@@ -158,83 +148,79 @@ describe("ConsoleConnection (integration)", function() {
   }
 
   it("undoes and redoes via applyUserActionsById", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "UndoMe" }]]);
+      await withConnection(docId, async (conn) => {
+        const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "UndoMe" }]]);
 
-      assert.equal(await getName(conn, 1), "UndoMe");
-      await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
-      assert.equal(await getName(conn, 1), "Alice");
-      await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
-      assert.equal(await getName(conn, 1), "UndoMe");
+        assert.equal(await getName(conn, 1), "UndoMe");
+        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
+        assert.equal(await getName(conn, 1), "Alice");
+        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
+        assert.equal(await getName(conn, 1), "UndoMe");
+      });
     } finally {
       await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
-      await conn.close();
     }
   });
 
   it("undoes multiple edits in reverse order", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
-      const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
-      const ag3 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Third" }]]);
-      assert.equal(await getName(conn, 1), "Third");
+      await withConnection(docId, async (conn) => {
+        const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
+        const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
+        const ag3 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Third" }]]);
+        assert.equal(await getName(conn, 1), "Third");
 
-      // Undo most recent first
-      await conn.applyUserActionsById([ag3.actionNum], [ag3.actionHash], true, { otherId: ag3.actionNum });
-      assert.equal(await getName(conn, 1), "Second");
-      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
-      assert.equal(await getName(conn, 1), "First");
-      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
-      assert.equal(await getName(conn, 1), "Alice");
+        // Undo most recent first
+        await conn.applyUserActionsById([ag3.actionNum], [ag3.actionHash], true, { otherId: ag3.actionNum });
+        assert.equal(await getName(conn, 1), "Second");
+        await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
+        assert.equal(await getName(conn, 1), "First");
+        await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
+        assert.equal(await getName(conn, 1), "Alice");
+      });
     } finally {
       await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
-      await conn.close();
     }
   });
 
   it("redoes multiple undos in forward order", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
-      const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
+      await withConnection(docId, async (conn) => {
+        const ag1 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "First" }]]);
+        const ag2 = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "Second" }]]);
 
-      // Undo both
-      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
-      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
-      assert.equal(await getName(conn, 1), "Alice");
+        // Undo both
+        await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], true, { otherId: ag2.actionNum });
+        await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], true, { otherId: ag1.actionNum });
+        assert.equal(await getName(conn, 1), "Alice");
 
-      // Redo in original order
-      await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], false, { otherId: ag1.actionNum });
-      assert.equal(await getName(conn, 1), "First");
-      await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], false, { otherId: ag2.actionNum });
-      assert.equal(await getName(conn, 1), "Second");
+        // Redo in original order
+        await conn.applyUserActionsById([ag1.actionNum], [ag1.actionHash], false, { otherId: ag1.actionNum });
+        assert.equal(await getName(conn, 1), "First");
+        await conn.applyUserActionsById([ag2.actionNum], [ag2.actionHash], false, { otherId: ag2.actionNum });
+        assert.equal(await getName(conn, 1), "Second");
+      });
     } finally {
       await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
-      await conn.close();
     }
   });
 
   it("undo, redo, undo, redo alternation converges", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-      const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "ToggleMe" }]]);
-      assert.equal(await getName(conn, 1), "ToggleMe");
+      await withConnection(docId, async (conn) => {
+        const ag = await editAndCaptureAg(conn, [["UpdateRecord", "People", 1, { Name: "ToggleMe" }]]);
+        assert.equal(await getName(conn, 1), "ToggleMe");
 
-      for (let i = 0; i < 3; i++) {
-        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
-        assert.equal(await getName(conn, 1), "Alice", `after undo ${i + 1}`);
-        await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
-        assert.equal(await getName(conn, 1), "ToggleMe", `after redo ${i + 1}`);
-      }
+        for (let i = 0; i < 3; i++) {
+          await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], true, { otherId: ag.actionNum });
+          assert.equal(await getName(conn, 1), "Alice", `after undo ${i + 1}`);
+          await conn.applyUserActionsById([ag.actionNum], [ag.actionHash], false, { otherId: ag.actionNum });
+          assert.equal(await getName(conn, 1), "ToggleMe", `after redo ${i + 1}`);
+        }
+      });
     } finally {
       await updateRows(docId, "People", { id: [1], Name: ["Alice"] });
-      await conn.close();
     }
   });
 
@@ -250,38 +236,35 @@ describe("ConsoleConnection (integration)", function() {
     ]);
     await addRows(testDocId, "Things", { Label: ["Alpha", "Bravo", "Charlie"] });
 
-    const conn1 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn1.connect();
-    const initialData = await conn1.fetchTable("Things");
+    await withConnection(testDocId, async (conn) => {
+      const initialData = await conn.fetchTable("Things");
 
-    // Sort initial data by manualSort so row 0 corresponds to the visible top
-    const indices = initialData.rowIds.map((_, i) => i);
-    indices.sort((a, b) =>
-      (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
-    );
-    const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
+      // Sort initial data by manualSort so row 0 corresponds to the visible top
+      const indices = initialData.rowIds.map((_, i) => i);
+      indices.sort((a, b) =>
+        (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
+      );
+      const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
 
-    // Compute insert hint = cursor (row 0) manualSort value
-    const insertMS = computeInsertManualSort(sortedManualSort, 0, sortedManualSort.length);
-    assert.equal(insertMS, sortedManualSort[0], "Hint should equal reference row's manualSort");
+      // Compute insert hint = cursor (row 0) manualSort value
+      const insertMS = computeInsertManualSort(sortedManualSort, 0, sortedManualSort.length);
+      assert.equal(insertMS, sortedManualSort[0], "Hint should equal reference row's manualSort");
 
-    await conn1.applyUserActions([
-      ["AddRecord", "Things", null, { Label: "TopInsert", manualSort: insertMS }],
-    ]);
-    await conn1.close();
+      await conn.applyUserActions([
+        ["AddRecord", "Things", null, { Label: "TopInsert", manualSort: insertMS }],
+      ]);
+    });
 
     // Reload and verify order
-    const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn2.connect();
-    const reloaded = await conn2.fetchTable("Things");
-    const reloadIdx = reloaded.rowIds.map((_, i) => i);
-    reloadIdx.sort((a, b) =>
-      (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
-    );
-    const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
-    assert.deepEqual(orderedLabels, ["TopInsert", "Alpha", "Bravo", "Charlie"]);
-
-    await conn2.close();
+    await withConnection(testDocId, async (conn) => {
+      const reloaded = await conn.fetchTable("Things");
+      const reloadIdx = reloaded.rowIds.map((_, i) => i);
+      reloadIdx.sort((a, b) =>
+        (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
+      );
+      const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
+      assert.deepEqual(orderedLabels, ["TopInsert", "Alpha", "Bravo", "Charlie"]);
+    });
   });
 
   it("adding a row in the middle inserts above cursor row", async function() {
@@ -293,42 +276,38 @@ describe("ConsoleConnection (integration)", function() {
     ]);
     await addRows(testDocId, "Things", { Label: ["A", "B", "C", "D"] });
 
-    const conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    const initialData = await conn.fetchTable("Things");
+    await withConnection(testDocId, async (conn) => {
+      const initialData = await conn.fetchTable("Things");
 
-    const indices = initialData.rowIds.map((_, i) => i);
-    indices.sort((a, b) =>
-      (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
-    );
-    const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
+      const indices = initialData.rowIds.map((_, i) => i);
+      indices.sort((a, b) =>
+        (initialData.colValues.manualSort[a] as number) - (initialData.colValues.manualSort[b] as number)
+      );
+      const sortedManualSort = indices.map(i => initialData.colValues.manualSort[i]);
 
-    // Cursor on row 2 (label "C"). Pass C's manualSort as hint.
-    const insertMS = computeInsertManualSort(sortedManualSort, 2, sortedManualSort.length);
-    assert.equal(insertMS, sortedManualSort[2]);
+      // Cursor on row 2 (label "C"). Pass C's manualSort as hint.
+      const insertMS = computeInsertManualSort(sortedManualSort, 2, sortedManualSort.length);
+      assert.equal(insertMS, sortedManualSort[2]);
 
-    await conn.applyUserActions([
-      ["AddRecord", "Things", null, { Label: "MidInsert", manualSort: insertMS }],
-    ]);
-    await conn.close();
+      await conn.applyUserActions([
+        ["AddRecord", "Things", null, { Label: "MidInsert", manualSort: insertMS }],
+      ]);
+    });
 
-    const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn2.connect();
-    const reloaded = await conn2.fetchTable("Things");
-    const reloadIdx = reloaded.rowIds.map((_, i) => i);
-    reloadIdx.sort((a, b) =>
-      (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
-    );
-    const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
-    // Server inserts just before row 2 ("C"), so: A B MidInsert C D
-    assert.deepEqual(orderedLabels, ["A", "B", "MidInsert", "C", "D"]);
-    await conn2.close();
+    await withConnection(testDocId, async (conn) => {
+      const reloaded = await conn.fetchTable("Things");
+      const reloadIdx = reloaded.rowIds.map((_, i) => i);
+      reloadIdx.sort((a, b) =>
+        (reloaded.colValues.manualSort[a] as number) - (reloaded.colValues.manualSort[b] as number)
+      );
+      const orderedLabels = reloadIdx.map(i => reloaded.colValues.Label[i]);
+      // Server inserts just before row 2 ("C"), so: A B MidInsert C D
+      assert.deepEqual(orderedLabels, ["A", "B", "MidInsert", "C", "D"]);
+    });
   });
 
   it("deletes a row", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       // Add then delete a temporary row
       await conn.applyUserActions([
         ["AddRecord", "People", null, { Name: "Temp", Age: 99 }],
@@ -343,83 +322,72 @@ describe("ConsoleConnection (integration)", function() {
       ]);
       data = await conn.fetchTable("People");
       assert.notInclude(data.colValues.Name as string[], "Temp");
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("receives live updates from another client's edits", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn.connect();
-
-      // Set up a promise to capture the next docAction
-      const actionPromise = new Promise<DocAction[]>((resolve) => {
-        conn.onDocAction((actions: DocAction[]) => {
-          resolve(actions);
+      await withConnection(docId, async (conn) => {
+        // Set up a promise to capture the next docAction
+        const actionPromise = new Promise<DocAction[]>((resolve) => {
+          conn.onDocAction((actions: DocAction[]) => {
+            resolve(actions);
+          });
         });
+
+        // Make an edit via the REST API (simulating another client)
+        await updateRows(docId, "People", { id: [2], Name: ["Bobby"] });
+
+        // Wait for the broadcast
+        const actions = await actionPromise;
+        assert.isArray(actions);
+        assert.isAbove(actions.length, 0);
+        const updateAction = actions.find(
+          (a: any) => (a[0] === "UpdateRecord" || a[0] === "BulkUpdateRecord") && a[1] === "People"
+        );
+        assert.isOk(updateAction, "Should receive an update action for People table");
       });
-
-      // Make an edit via the REST API (simulating another client)
-      await updateRows(docId, "People", { id: [2], Name: ["Bobby"] });
-
-      // Wait for the broadcast
-      const actions = await actionPromise;
-      assert.isArray(actions);
-      assert.isAbove(actions.length, 0);
-      const updateAction = actions.find(
-        (a: any) => (a[0] === "UpdateRecord" || a[0] === "BulkUpdateRecord") && a[1] === "People"
-      );
-      assert.isOk(updateAction, "Should receive an update action for People table");
     } finally {
       await updateRows(docId, "People", { id: [2], Name: ["Bob"] });
-      await conn.close();
     }
   });
 
   it("two WebSocket clients see each other's changes", async function() {
-    const conn1 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
     try {
-      await conn1.connect();
-      await conn2.connect();
+      await withConnection(docId, async (conn1) => {
+        await withConnection(docId, async (conn2) => {
+          // Set up conn2 to listen for updates
+          const actionPromise = new Promise<DocAction[]>((resolve) => {
+            conn2.onDocAction((actions: DocAction[]) => {
+              resolve(actions);
+            });
+          });
 
-      // Set up conn2 to listen for updates
-      const actionPromise = new Promise<DocAction[]>((resolve) => {
-        conn2.onDocAction((actions: DocAction[]) => {
-          resolve(actions);
+          // conn1 makes an edit
+          await conn1.applyUserActions([
+            ["UpdateRecord", "People", 3, { Name: "Chuck" }],
+          ]);
+
+          // conn2 should receive the broadcast
+          const actions = await actionPromise;
+          const updateAction = actions.find(
+            (a: any) => (a[0] === "UpdateRecord" || a[0] === "BulkUpdateRecord") && a[1] === "People"
+          );
+          assert.isOk(updateAction, "conn2 should see the edit from conn1");
         });
       });
-
-      // conn1 makes an edit
-      await conn1.applyUserActions([
-        ["UpdateRecord", "People", 3, { Name: "Chuck" }],
-      ]);
-
-      // conn2 should receive the broadcast
-      const actions = await actionPromise;
-      const updateAction = actions.find(
-        (a: any) => (a[0] === "UpdateRecord" || a[0] === "BulkUpdateRecord") && a[1] === "People"
-      );
-      assert.isOk(updateAction, "conn2 should see the edit from conn1");
     } finally {
       await updateRows(docId, "People", { id: [3], Name: ["Charlie"] });
-      await conn1.close();
-      await conn2.close();
     }
   });
 
   it("connects to a public doc without an API key", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const tableIds = conn.getTableIds();
       assert.include(tableIds, "People");
       const data = await conn.fetchTable("People");
       assert.deepEqual(data.colValues.Name, ["Alice", "Bob", "Charlie"]);
-    } finally {
-      await conn.close();
-    }
+    }, { apiKey: undefined });
   });
 
   it("connects to a private doc with an API key", async function() {
@@ -432,60 +400,44 @@ describe("ConsoleConnection (integration)", function() {
     await addRows(privateDocId, "Secrets", { Code: ["alpha", "bravo"] });
 
     // Should work with API key
-    const conn = new ConsoleConnection(SERVER_URL, privateDocId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(privateDocId, async (conn) => {
       const data = await conn.fetchTable("Secrets");
       assert.deepEqual(data.colValues.Code, ["alpha", "bravo"]);
-    } finally {
-      await conn.close();
-    }
+    });
 
     // Should fail without API key
-    const conn2 = new ConsoleConnection(SERVER_URL, privateDocId);
     try {
-      await conn2.connect();
-      assert.fail("Should have thrown for private doc without API key");
+      await withConnection(privateDocId, async () => {
+        assert.fail("Should have thrown for private doc without API key");
+      }, { apiKey: undefined });
     } catch (err: any) {
       assert.match(err.message, /403|access|denied|rejected/i);
-    } finally {
-      await conn2.close();
     }
   });
 
   it("exposes metadata via getMetaTables", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const meta = conn.getMetaTables();
       assert.isOk(meta);
       assert.isOk(meta._grist_Tables);
       assert.isOk(meta._grist_Pages);
       assert.isOk(meta._grist_Views);
       assert.isOk(meta._grist_Views_section);
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("extracts pages from real metadata", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const pages = extractPages(conn.getMetaTables());
       assert.isAbove(pages.length, 0);
       const pageNames = pages.map(p => p.name);
       assert.isOk(pageNames.some(n => n.includes("People") || n.includes("Table1")),
         "Should find at least one page");
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("extracts sections for a view", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const pages = extractPages(conn.getMetaTables());
       assert.isAbove(pages.length, 0);
       const sections = extractSectionsForView(conn.getMetaTables(), pages[0].viewId);
@@ -494,9 +446,7 @@ describe("ConsoleConnection (integration)", function() {
         assert.isOk(sec.tableId);
         assert.isAbove(sec.sectionId, 0);
       }
-    } finally {
-      await conn.close();
-    }
+    });
   });
 
   it("computes correct layout direction from real multi-section view", async function() {
@@ -507,19 +457,16 @@ describe("ConsoleConnection (integration)", function() {
     const newViewId: number = r1.retValues[0].viewRef;
 
     // Read metadata to find People table ref
-    let conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    await conn.connect();
-    let meta = conn.getMetaTables();
-
-    const tablesData = meta._grist_Tables;
-    const tids: string[] = tablesData[3].tableId;
-    const trefs: number[] = tablesData[2];
-    let peopleTableRef = 0;
-    for (let i = 0; i < tids.length; i++) {
-      if (tids[i] === "People") { peopleTableRef = trefs[i]; break; }
-    }
+    const peopleTableRef = await withConnection(docId, async (conn) => {
+      const tablesData = conn.getMetaTables()._grist_Tables;
+      const tids: string[] = tablesData[3].tableId;
+      const trefs: number[] = tablesData[2];
+      for (let i = 0; i < tids.length; i++) {
+        if (tids[i] === "People") { return trefs[i]; }
+      }
+      return 0;
+    });
     assert.isAbove(peopleTableRef, 0, "People table should exist");
-    await conn.close();
 
     // Add second section to the same view
     const r2 = await applyUserActions(docId, [
@@ -539,62 +486,58 @@ describe("ConsoleConnection (integration)", function() {
     ]);
 
     // Re-connect to get fresh metadata
-    conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    await conn.connect();
-    meta = conn.getMetaTables();
+    await withConnection(docId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const sections = extractSectionsForView(meta, newViewId);
+      assert.equal(sections.length, 2, "View should have 2 record sections");
 
-    const sections = extractSectionsForView(meta, newViewId);
-    assert.equal(sections.length, 2, "View should have 2 record sections");
+      const layoutSpec = getLayoutSpecForView(meta, newViewId);
+      assert.isOk(layoutSpec, "View should have a layoutSpec");
 
-    const layoutSpec = getLayoutSpecForView(meta, newViewId);
-    assert.isOk(layoutSpec, "View should have a layoutSpec");
+      const sectionIds = sections.map(s => s.sectionId);
+      const sectionIdToPaneIndex = new Map<number, number>();
+      sectionIds.forEach((id, i) => sectionIdToPaneIndex.set(id, i));
 
-    const sectionIds = sections.map(s => s.sectionId);
-    const sectionIdToPaneIndex = new Map<number, number>();
-    sectionIds.forEach((id, i) => sectionIdToPaneIndex.set(id, i));
+      const boxSpec = parseLayoutSpec(layoutSpec, sectionIds);
+      const rect: Rect = { top: 0, left: 0, width: 120, height: 40 };
+      const layout = computeLayout(boxSpec, rect, sectionIdToPaneIndex);
 
-    const boxSpec = parseLayoutSpec(layoutSpec, sectionIds);
-    const rect: Rect = { top: 0, left: 0, width: 120, height: 40 };
-    const layout = computeLayout(boxSpec, rect, sectionIdToPaneIndex);
+      assert.isOk(layout.children, `Layout should have children. BoxSpec: ${JSON.stringify(boxSpec)}`);
+      assert.equal(layout.children!.length, 2, "Should have 2 child panes");
+      assert.equal(layout.direction, "horizontal",
+        `Expected horizontal split but got ${layout.direction}. BoxSpec: ${JSON.stringify(boxSpec)}`);
 
-    assert.isOk(layout.children, `Layout should have children. BoxSpec: ${JSON.stringify(boxSpec)}`);
-    assert.equal(layout.children!.length, 2, "Should have 2 child panes");
-    assert.equal(layout.direction, "horizontal",
-      `Expected horizontal split but got ${layout.direction}. BoxSpec: ${JSON.stringify(boxSpec)}`);
+      assert.equal(layout.children![0].top, layout.children![1].top);
+      assert.isBelow(layout.children![0].left, layout.children![1].left);
 
-    assert.equal(layout.children![0].top, layout.children![1].top);
-    assert.isBelow(layout.children![0].left, layout.children![1].left);
-
-    const w0 = layout.children![0].width;
-    const w1 = layout.children![1].width;
-    assert.equal(w0 + 1 + w1, 120, "Widths + border should equal total width");
-
-    await conn.close();
+      const w0 = layout.children![0].width;
+      const w1 = layout.children![1].width;
+      assert.equal(w0 + 1 + w1, 120, "Widths + border should equal total width");
+    });
   });
 
   it("computes vertical layout for stacked sections", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    await conn.connect();
+    await withConnection(docId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const pages = extractPages(meta);
+      const peoplePage = pages.find(p => p.name.includes("People"));
+      assert.isOk(peoplePage);
+      const sections = extractSectionsForView(meta, peoplePage!.viewId);
+      assert.isAbove(sections.length, 0);
 
-    const meta = conn.getMetaTables();
-    const pages = extractPages(meta);
-    const peoplePage = pages.find(p => p.name.includes("People"));
-    assert.isOk(peoplePage);
-    const sections = extractSectionsForView(meta, peoplePage!.viewId);
-    assert.isAbove(sections.length, 0);
+      const sectionIds = sections.map(s => s.sectionId);
+      const boxSpec = parseLayoutSpec(undefined, sectionIds);
+      const sectionIdToPaneIndex = new Map<number, number>();
+      sectionIds.forEach((id, i) => sectionIdToPaneIndex.set(id, i));
 
-    const sectionIds = sections.map(s => s.sectionId);
-    const boxSpec = parseLayoutSpec(undefined, sectionIds);
-    const sectionIdToPaneIndex = new Map<number, number>();
-    sectionIds.forEach((id, i) => sectionIdToPaneIndex.set(id, i));
-
-    if (sectionIds.length === 1) {
-      const rect: Rect = { top: 0, left: 0, width: 80, height: 24 };
-      const layout = computeLayout(boxSpec, rect, sectionIdToPaneIndex);
-      assert.equal(layout.width, 80);
-      assert.equal(layout.height, 24);
-      assert.equal(layout.paneIndex, 0);
-    }
+      if (sectionIds.length === 1) {
+        const rect: Rect = { top: 0, left: 0, width: 80, height: 24 };
+        const layout = computeLayout(boxSpec, rect, sectionIdToPaneIndex);
+        assert.equal(layout.width, 80);
+        assert.equal(layout.height, 24);
+        assert.equal(layout.paneIndex, 0);
+      }
+    });
 
     // Test with a manually stacked layout (2 sections vertical)
     const stackedSpec = { children: [{ leaf: 100 }, { leaf: 200 }] };
@@ -607,14 +550,10 @@ describe("ConsoleConnection (integration)", function() {
       "Stacked children should have same left");
     assert.isBelow(layout.children![0].top, layout.children![1].top,
       "First child should be above second");
-
-    await conn.close();
   });
 
   it("gets columns for a section using field ordering", async function() {
-    const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-    try {
-      await conn.connect();
+    await withConnection(docId, async (conn) => {
       const pages = extractPages(conn.getMetaTables());
       const peoplePage = pages.find(p => p.name.includes("People"));
       assert.isOk(peoplePage, "Should find People page");
@@ -625,10 +564,35 @@ describe("ConsoleConnection (integration)", function() {
       const colIds = cols.map(c => c.colId);
       assert.include(colIds, "Name");
       assert.include(colIds, "Age");
-    } finally {
-      await conn.close();
-    }
+    });
   });
+
+  // Helper: remove all _grist_Filters rows whose viewSectionRef matches.
+  async function clearSectionFilters(testDocId: string, sectionId: number, meta: any): Promise<void> {
+    const filterData = meta._grist_Filters;
+    if (!filterData) { return; }
+    const filterIds: number[] = filterData[2];
+    const filterVals = filterData[3];
+    for (let i = 0; i < filterIds.length; i++) {
+      if (filterVals.viewSectionRef[i] === sectionId) {
+        await applyUserActions(testDocId, [
+          ["RemoveRecord", "_grist_Filters", filterIds[i]],
+        ]);
+      }
+    }
+  }
+
+  // Helper: find a column's ref by colId within a specific table.
+  function findColRef(meta: any, tableRef: number, colId: string): number {
+    const colData = meta._grist_Tables_column;
+    const colIds: string[] = colData[3].colId;
+    const colRefs: number[] = colData[2];
+    const parentIds: number[] = colData[3].parentId;
+    for (let i = 0; i < colIds.length; i++) {
+      if (colIds[i] === colId && parentIds[i] === tableRef) { return colRefs[i]; }
+    }
+    return 0;
+  }
 
   // Helper: build a PaneState from fetched data + section metadata
   function buildPane(
@@ -650,208 +614,146 @@ describe("ConsoleConnection (integration)", function() {
 
   describe("sorting with real metadata", function() {
     it("sorts a section by Name ascending", async function() {
-      // Find the People section and set sortColRefs on it
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      // Find the People section and the Name column ref
+      const { sectionId, nameColRef, peoplePageViewId } = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          sectionId: sec.sectionId,
+          nameColRef: findColRef(meta, sec.tableRef, "Name"),
+          peoplePageViewId: peoplePage.viewId,
+        };
+      });
+      assert.isAbove(nameColRef, 0, "Should find Name column ref");
 
-        // Find the Name column ref
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let nameColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (colIds[i] === "Name" && parentIds[i] === sec.tableRef) {
-            nameColRef = colRefs[i];
-            break;
-          }
-        }
-        assert.isAbove(nameColRef, 0, "Should find Name column ref");
+      await applyUserActions(docId, [
+        ["UpdateRecord", "_grist_Views_section", sectionId,
+         { sortColRefs: JSON.stringify([nameColRef]) }],
+      ]);
 
-        // Set sort on the section
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, peoplePageViewId)[0];
+          assert.isOk(sec.sortColRefs, "Section should have sortColRefs set");
+
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
+
+          applySortSpec(pane, sec.sortColRefs, meta);
+          assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
+        });
+      } finally {
         await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: JSON.stringify([nameColRef]) }],
+          ["UpdateRecord", "_grist_Views_section", sectionId, { sortColRefs: "" }],
         ]);
-
-        // Reconnect to get fresh metadata
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-        assert.isOk(sec2.sortColRefs, "Section should have sortColRefs set");
-
-        // Build a pane from the fetched data
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        // Apply sorting
-        applySortSpec(pane, sec2.sortColRefs, meta2);
-        assert.deepEqual(pane.colValues.Name, ["Alice", "Bob", "Charlie"]);
-
-        // Clean up: remove sort
-        await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: "" }],
-        ]);
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
       }
     });
 
     it("sorts descending by Age", async function() {
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      const { sectionId, ageColRef, peoplePageViewId } = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          sectionId: sec.sectionId,
+          ageColRef: findColRef(meta, sec.tableRef, "Age"),
+          peoplePageViewId: peoplePage.viewId,
+        };
+      });
 
-        // Find Age colRef
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let ageColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (colIds[i] === "Age" && parentIds[i] === sec.tableRef) {
-            ageColRef = colRefs[i];
-            break;
-          }
-        }
+      await applyUserActions(docId, [
+        ["UpdateRecord", "_grist_Views_section", sectionId,
+         { sortColRefs: JSON.stringify([-ageColRef]) }],
+      ]);
 
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, peoplePageViewId)[0];
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
+
+          applySortSpec(pane, sec.sortColRefs, meta);
+          assert.deepEqual(pane.colValues.Age, [35, 30, 25]);
+          assert.deepEqual(pane.colValues.Name, ["Charlie", "Alice", "Bob"]);
+        });
+      } finally {
         await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: JSON.stringify([-ageColRef]) }],
+          ["UpdateRecord", "_grist_Views_section", sectionId, { sortColRefs: "" }],
         ]);
-
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        applySortSpec(pane, sec2.sortColRefs, meta2);
-        assert.deepEqual(pane.colValues.Age, [35, 30, 25]);
-        assert.deepEqual(pane.colValues.Name, ["Charlie", "Alice", "Bob"]);
-
-        await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: "" }],
-        ]);
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
       }
     });
 
     it("sorting is stable after adding a row", async function() {
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      const { sectionId, nameColRef, peoplePageViewId } = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          sectionId: sec.sectionId,
+          nameColRef: findColRef(meta, sec.tableRef, "Name"),
+          peoplePageViewId: peoplePage.viewId,
+        };
+      });
 
-        // Find Name colRef
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let nameColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (colIds[i] === "Name" && parentIds[i] === sec.tableRef) {
-            nameColRef = colRefs[i];
-            break;
+      await applyUserActions(docId, [
+        ["UpdateRecord", "_grist_Views_section", sectionId,
+         { sortColRefs: JSON.stringify([nameColRef]) }],
+      ]);
+      await addRows(docId, "People", { Name: ["Aaron"], Age: [20] });
+
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, peoplePageViewId)[0];
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
+
+          // Apply sort -- Aaron should appear first
+          applySortSpec(pane, sec.sortColRefs, meta);
+          assert.deepEqual(pane.colValues.Name, ["Aaron", "Alice", "Bob", "Charlie"]);
+
+          // Simulate what happens when a row is added to an already-sorted pane:
+          // the new row lands at the end of allRowIds, then reapplySortAndFilter
+          // should put it in the right place.
+          const pane2 = buildPane(sec, columns, data.rowIds, data.colValues);
+          applySortSpec(pane2, sec.sortColRefs, meta);
+          // Now simulate adding "Abe" to the *all* data (as the dispatcher would)
+          pane2.allRowIds.push(999);
+          for (const col of columns) {
+            if (!pane2.allColValues[col.colId]) { pane2.allColValues[col.colId] = []; }
           }
-        }
+          pane2.allColValues.Name.push("Abe");
+          pane2.allColValues.Age.push(18);
+          // Rebuild visible from all, then re-sort (as reapplySortAndFilter does)
+          pane2.rowIds = [...pane2.allRowIds];
+          pane2.colValues = Object.fromEntries(
+            Object.entries(pane2.allColValues).map(([k, v]) => [k, [...v]])
+          );
+          applySortSpec(pane2, sec.sortColRefs, meta);
+          assert.deepEqual(
+            pane2.colValues.Name,
+            ["Aaron", "Abe", "Alice", "Bob", "Charlie"],
+            "New row should be sorted into correct position"
+          );
 
-        // Set sort by Name ascending
+          // Remove Aaron
+          const aaronIdx = (data.colValues.Name as string[]).indexOf("Aaron");
+          if (aaronIdx >= 0) {
+            await conn.applyUserActions([
+              ["RemoveRecord", "People", data.rowIds[aaronIdx]],
+            ]);
+          }
+        });
+      } finally {
         await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: JSON.stringify([nameColRef]) }],
+          ["UpdateRecord", "_grist_Views_section", sectionId, { sortColRefs: "" }],
         ]);
-
-        // Add a row
-        await addRows(docId, "People", { Name: ["Aaron"], Age: [20] });
-
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        // Apply sort -- Aaron should appear first
-        applySortSpec(pane, sec2.sortColRefs, meta2);
-        assert.deepEqual(pane.colValues.Name, ["Aaron", "Alice", "Bob", "Charlie"]);
-
-        // Simulate what happens when a row is added to an already-sorted pane:
-        // the new row lands at the end of allRowIds, then reapplySortAndFilter
-        // should put it in the right place.
-        const pane2 = buildPane(sec2, columns, data.rowIds, data.colValues);
-        applySortSpec(pane2, sec2.sortColRefs, meta2);
-        // Now simulate adding "Abe" to the *all* data (as applyDocActionToPane would)
-        const newRowId = 999;
-        pane2.allRowIds.push(newRowId);
-        for (const col of columns) {
-          if (!pane2.allColValues[col.colId]) { pane2.allColValues[col.colId] = []; }
-        }
-        pane2.allColValues.Name.push("Abe");
-        pane2.allColValues.Age.push(18);
-        // Rebuild visible from all, then re-sort (as reapplySortAndFilter does)
-        pane2.rowIds = [...pane2.allRowIds];
-        pane2.colValues = Object.fromEntries(
-          Object.entries(pane2.allColValues).map(([k, v]) => [k, [...v]])
-        );
-        applySortSpec(pane2, sec2.sortColRefs, meta2);
-        assert.deepEqual(
-          pane2.colValues.Name,
-          ["Aaron", "Abe", "Alice", "Bob", "Charlie"],
-          "New row should be sorted into correct position"
-        );
-
-        // Clean up
-        // Remove Aaron
-        const aaronIdx = (data.colValues.Name as string[]).indexOf("Aaron");
-        if (aaronIdx >= 0) {
-          await applyUserActions(docId, [
-            ["RemoveRecord", "People", data.rowIds[aaronIdx]],
-          ]);
-        }
-        await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: "" }],
-        ]);
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
       }
     });
   });
@@ -871,71 +773,60 @@ describe("ConsoleConnection (integration)", function() {
     });
 
     // Find the section and column refs
-    let conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    let meta = conn.getMetaTables();
-    const pages = extractPages(meta);
-    const page = pages.find(p => p.name.includes("Items"))!;
-    const sections = extractSectionsForView(meta, page.viewId);
-    const sec = sections[0];
-
-    const colData = meta._grist_Tables_column;
-    const colIds: string[] = colData[3].colId;
-    const colRefs: number[] = colData[2];
-    const parentIds: number[] = colData[3].parentId;
-    let labelColRef = 0, doneColRef = 0;
-    for (let i = 0; i < colIds.length; i++) {
-      if (parentIds[i] !== sec.tableRef) { continue; }
-      if (colIds[i] === "Label") { labelColRef = colRefs[i]; }
-      if (colIds[i] === "Done") { doneColRef = colRefs[i]; }
-    }
+    const setup = await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const page = extractPages(meta).find(p => p.name.includes("Items"))!;
+      const sec = extractSectionsForView(meta, page.viewId)[0];
+      return {
+        viewId: page.viewId,
+        sectionId: sec.sectionId,
+        labelColRef: findColRef(meta, sec.tableRef, "Label"),
+        doneColRef: findColRef(meta, sec.tableRef, "Done"),
+      };
+    });
 
     // Sort by Label ascending, filter Done == false (include only false)
     await applyUserActions(testDocId, [
-      ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-       { sortColRefs: JSON.stringify([labelColRef]) }],
+      ["UpdateRecord", "_grist_Views_section", setup.sectionId,
+       { sortColRefs: JSON.stringify([setup.labelColRef]) }],
       ["AddRecord", "_grist_Filters", null, {
-        viewSectionRef: sec.sectionId,
-        colRef: doneColRef,
+        viewSectionRef: setup.sectionId,
+        colRef: setup.doneColRef,
         filter: JSON.stringify({ included: [false] }),
         pinned: true,
       }],
     ]);
-    await conn.close();
 
-    // Reconnect, fetch data, build pane
-    conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    meta = conn.getMetaTables();
-    const sec2 = extractSectionsForView(meta, page.viewId)[0];
-    let data = await conn.fetchTable("Items");
-    const columns = conn.getColumnsForSection(sec2.sectionId);
+    await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const sec = extractSectionsForView(meta, setup.viewId)[0];
+      let data = await conn.fetchTable("Items");
+      const columns = conn.getColumnsForSection(sec.sectionId);
 
-    // Verify Bool values come as actual booleans
-    assert.strictEqual(data.colValues.Done[0], false, "Bool should be false not 0");
+      // Verify Bool values come as actual booleans
+      assert.strictEqual(data.colValues.Done[0], false, "Bool should be false not 0");
 
-    let pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-    applySectionFilters(pane, sec2.sectionId, meta);
-    applySortSpec(pane, sec2.sortColRefs, meta);
-    assert.deepEqual(pane.colValues.Label, ["First", "Second"]);
-    assert.equal(pane.rowIds.length, 2);
+      let pane = buildPane(sec, columns, data.rowIds, data.colValues);
+      applySectionFilters(pane, sec.sectionId, meta);
+      applySortSpec(pane, sec.sortColRefs, meta);
+      assert.deepEqual(pane.colValues.Label, ["First", "Second"]);
+      assert.equal(pane.rowIds.length, 2);
 
-    // Add a new row via the connection (as the TUI would)
-    await conn.applyUserActions([
-      ["AddRecord", "Items", null, { Label: "Third" }],
-    ]);
+      // Add a new row via the connection (as the TUI would)
+      await conn.applyUserActions([
+        ["AddRecord", "Items", null, { Label: "Third" }],
+      ]);
 
-    // Re-fetch and verify the new row appears
-    data = await conn.fetchTable("Items");
-    pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-    applySectionFilters(pane, sec2.sectionId, meta);
-    applySortSpec(pane, sec2.sortColRefs, meta);
-    assert.include(pane.colValues.Label as string[], "Third",
-      "New row should be visible after filter+sort");
-    assert.deepEqual(pane.colValues.Label, ["First", "Second", "Third"],
-      "Rows should be sorted alphabetically");
-
-    await conn.close();
+      // Re-fetch and verify the new row appears
+      data = await conn.fetchTable("Items");
+      pane = buildPane(sec, columns, data.rowIds, data.colValues);
+      applySectionFilters(pane, sec.sectionId, meta);
+      applySortSpec(pane, sec.sortColRefs, meta);
+      assert.include(pane.colValues.Label as string[], "Third",
+        "New row should be visible after filter+sort");
+      assert.deepEqual(pane.colValues.Label, ["First", "Second", "Third"],
+        "Rows should be sorted alphabetically");
+    });
   });
 
   it("new row is visible via live update with sort and filter", async function() {
@@ -951,100 +842,90 @@ describe("ConsoleConnection (integration)", function() {
       Done: [false, false],
     });
 
-    let conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    let meta = conn.getMetaTables();
-    const pages = extractPages(meta);
-    const page = pages.find(p => p.name.includes("Items"))!;
-    const sec = extractSectionsForView(meta, page.viewId)[0];
-
-    const colData = meta._grist_Tables_column;
-    const colIds: string[] = colData[3].colId;
-    const colRefs: number[] = colData[2];
-    const parentIds: number[] = colData[3].parentId;
-    let labelColRef = 0, doneColRef = 0;
-    for (let i = 0; i < colIds.length; i++) {
-      if (parentIds[i] !== sec.tableRef) { continue; }
-      if (colIds[i] === "Label") { labelColRef = colRefs[i]; }
-      if (colIds[i] === "Done") { doneColRef = colRefs[i]; }
-    }
+    const setup = await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const page = extractPages(meta).find(p => p.name.includes("Items"))!;
+      const sec = extractSectionsForView(meta, page.viewId)[0];
+      return {
+        viewId: page.viewId,
+        sectionId: sec.sectionId,
+        labelColRef: findColRef(meta, sec.tableRef, "Label"),
+        doneColRef: findColRef(meta, sec.tableRef, "Done"),
+      };
+    });
 
     await applyUserActions(testDocId, [
-      ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-       { sortColRefs: JSON.stringify([labelColRef]) }],
+      ["UpdateRecord", "_grist_Views_section", setup.sectionId,
+       { sortColRefs: JSON.stringify([setup.labelColRef]) }],
       ["AddRecord", "_grist_Filters", null, {
-        viewSectionRef: sec.sectionId,
-        colRef: doneColRef,
+        viewSectionRef: setup.sectionId,
+        colRef: setup.doneColRef,
         filter: JSON.stringify({ included: [false] }),
         pinned: true,
       }],
     ]);
-    await conn.close();
 
-    // Reconnect with fresh metadata
-    conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    meta = conn.getMetaTables();
-    const sec2 = extractSectionsForView(meta, page.viewId)[0];
-    const columns = conn.getColumnsForSection(sec2.sectionId);
-    const data = await conn.fetchTable("Items");
+    await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const sec = extractSectionsForView(meta, setup.viewId)[0];
+      const columns = conn.getColumnsForSection(sec.sectionId);
+      const data = await conn.fetchTable("Items");
 
-    // Build pane as ConsoleMain.loadPage would
-    const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
+      // Build pane as ConsoleMain.loadPage would
+      const pane = buildPane(sec, columns, data.rowIds, data.colValues);
 
-    // Initial sort+filter
-    applySectionFilters(pane, sec2.sectionId, meta);
-    applySortSpec(pane, sec2.sortColRefs, meta);
-    assert.deepEqual(pane.colValues.Label, ["Alpha", "Bravo"]);
+      // Initial sort+filter
+      applySectionFilters(pane, sec.sectionId, meta);
+      applySortSpec(pane, sec.sortColRefs, meta);
+      assert.deepEqual(pane.colValues.Label, ["Alpha", "Bravo"]);
 
-    // Listen for live update when we add a row from another client
-    const actionPromise = new Promise<DocAction[]>((resolve) => {
-      conn.onDocAction(resolve);
-    });
+      // Listen for live update when we add a row from another client
+      const actionPromise = new Promise<DocAction[]>((resolve) => {
+        conn.onDocAction(resolve);
+      });
 
-    // Add row via REST API (simulates another client)
-    await addRows(testDocId, "Items", { Label: ["Charlie"], Done: [false] });
-    const actions = await actionPromise;
+      // Add row via REST API (simulates another client)
+      await addRows(testDocId, "Items", { Label: ["Charlie"], Done: [false] });
+      const actions = await actionPromise;
 
-    // Apply the DocAction to the pane (as applyDocActionToPane does)
-    for (const action of actions) {
-      const actionType = action[0];
-      if (actionType === "AddRecord" || actionType === "BulkAddRecord") {
-        if (actionType === "BulkAddRecord") {
-          const [, , rowIds, colValues] = action as any;
-          for (let i = 0; i < rowIds.length; i++) {
-            pane.allRowIds.push(rowIds[i]);
+      // Apply the DocAction to the pane (as the dispatcher does)
+      for (const action of actions) {
+        const actionType = action[0];
+        if (actionType === "AddRecord" || actionType === "BulkAddRecord") {
+          if (actionType === "BulkAddRecord") {
+            const [, , rowIds, colValues] = action as any;
+            for (let i = 0; i < rowIds.length; i++) {
+              pane.allRowIds.push(rowIds[i]);
+              for (const col of columns) {
+                if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
+                const vals = colValues[col.colId];
+                pane.allColValues[col.colId].push(vals ? vals[i] : null);
+              }
+            }
+          } else {
+            const [, , rowId, colValues] = action as any;
+            pane.allRowIds.push(rowId);
             for (const col of columns) {
               if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
-              const vals = colValues[col.colId];
-              pane.allColValues[col.colId].push(vals ? vals[i] : null);
+              pane.allColValues[col.colId].push(colValues[col.colId] ?? null);
             }
-          }
-        } else {
-          const [, , rowId, colValues] = action as any;
-          pane.allRowIds.push(rowId);
-          for (const col of columns) {
-            if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
-            pane.allColValues[col.colId].push(colValues[col.colId] ?? null);
           }
         }
       }
-    }
 
-    // Now reapply sort+filter from all* (as reapplySortAndFilter does)
-    pane.rowIds = [...pane.allRowIds];
-    pane.colValues = Object.fromEntries(
-      Object.entries(pane.allColValues).map(([k, v]) => [k, [...v]])
-    );
-    applySectionFilters(pane, sec2.sectionId, meta);
-    applySortSpec(pane, sec2.sortColRefs, meta);
+      // Now reapply sort+filter from all* (as reapplySortAndFilter does)
+      pane.rowIds = [...pane.allRowIds];
+      pane.colValues = Object.fromEntries(
+        Object.entries(pane.allColValues).map(([k, v]) => [k, [...v]])
+      );
+      applySectionFilters(pane, sec.sectionId, meta);
+      applySortSpec(pane, sec.sortColRefs, meta);
 
-    // The new row should be visible and sorted
-    assert.include(pane.colValues.Label as string[], "Charlie",
-      "New row from live update should be visible after sort+filter");
-    assert.deepEqual(pane.colValues.Label, ["Alpha", "Bravo", "Charlie"]);
-
-    await conn.close();
+      // The new row should be visible and sorted
+      assert.include(pane.colValues.Label as string[], "Charlie",
+        "New row from live update should be visible after sort+filter");
+      assert.deepEqual(pane.colValues.Label, ["Alpha", "Bravo", "Charlie"]);
+    });
   });
 
   it("AddRecord with empty colValues uses column-type defaults for filtering", async function() {
@@ -1057,281 +938,188 @@ describe("ConsoleConnection (integration)", function() {
     ]);
     await addRows(testDocId, "Items", { Label: ["First"], Done: [false] });
 
-    let conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    let meta = conn.getMetaTables();
-    const pages = extractPages(meta);
-    const page = pages.find(p => p.name.includes("Items"))!;
-    const sec = extractSectionsForView(meta, page.viewId)[0];
-
-    const colData = meta._grist_Tables_column;
-    const colIds: string[] = colData[3].colId;
-    const colRefs: number[] = colData[2];
-    const parentIds: number[] = colData[3].parentId;
-    let doneColRef = 0;
-    for (let i = 0; i < colIds.length; i++) {
-      if (parentIds[i] === sec.tableRef && colIds[i] === "Done") {
-        doneColRef = colRefs[i]; break;
-      }
-    }
+    const setup = await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const page = extractPages(meta).find(p => p.name.includes("Items"))!;
+      const sec = extractSectionsForView(meta, page.viewId)[0];
+      return {
+        viewId: page.viewId,
+        sectionId: sec.sectionId,
+        doneColRef: findColRef(meta, sec.tableRef, "Done"),
+      };
+    });
 
     // Filter: include only Done=false
     await applyUserActions(testDocId, [
       ["AddRecord", "_grist_Filters", null, {
-        viewSectionRef: sec.sectionId,
-        colRef: doneColRef,
+        viewSectionRef: setup.sectionId,
+        colRef: setup.doneColRef,
         filter: JSON.stringify({ included: [false] }),
         pinned: true,
       }],
     ]);
-    await conn.close();
 
-    conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-    await conn.connect();
-    meta = conn.getMetaTables();
-    const sec2 = extractSectionsForView(meta, page.viewId)[0];
-    const columns = conn.getColumnsForSection(sec2.sectionId);
-    const data = await conn.fetchTable("Items");
+    await withConnection(testDocId, async (conn) => {
+      const meta = conn.getMetaTables();
+      const sec = extractSectionsForView(meta, setup.viewId)[0];
+      const columns = conn.getColumnsForSection(sec.sectionId);
+      const data = await conn.fetchTable("Items");
 
-    // Build pane, apply filter -- should show "First"
-    const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-    applySectionFilters(pane, sec2.sectionId, meta);
-    assert.deepEqual(pane.colValues.Label, ["First"]);
+      // Build pane, apply filter -- should show "First"
+      const pane = buildPane(sec, columns, data.rowIds, data.colValues);
+      applySectionFilters(pane, sec.sectionId, meta);
+      assert.deepEqual(pane.colValues.Label, ["First"]);
 
-    // Now simulate a live AddRecord with empty colValues (as the server sends)
-    const newRowId = 999;
-    pane.allRowIds.push(newRowId);
-    for (const col of columns) {
-      if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
-      // Server sends {"manualSort": 1} -- no Done, no Label
-      const actionColValues: Record<string, any> = { manualSort: 1 };
-      pane.allColValues[col.colId].push(actionColValues[col.colId] ?? defaultVal(col.type));
-    }
+      // Now simulate a live AddRecord with empty colValues (as the server sends)
+      pane.allRowIds.push(999);
+      for (const col of columns) {
+        if (!pane.allColValues[col.colId]) { pane.allColValues[col.colId] = []; }
+        // Server sends {"manualSort": 1} -- no Done, no Label
+        const actionColValues: Record<string, any> = { manualSort: 1 };
+        pane.allColValues[col.colId].push(actionColValues[col.colId] ?? defaultVal(col.type));
+      }
 
-    // Rebuild visible and filter
-    pane.rowIds = [...pane.allRowIds];
-    pane.colValues = Object.fromEntries(
-      Object.entries(pane.allColValues).map(([k, v]) => [k, [...v]])
-    );
-    applySectionFilters(pane, sec2.sectionId, meta);
+      // Rebuild visible and filter
+      pane.rowIds = [...pane.allRowIds];
+      pane.colValues = Object.fromEntries(
+        Object.entries(pane.allColValues).map(([k, v]) => [k, [...v]])
+      );
+      applySectionFilters(pane, sec.sectionId, meta);
 
-    // New row should be visible because Done defaults to false, which passes the filter
-    assert.equal(pane.rowIds.length, 2,
-      "New row with default Bool=false should pass the inclusion filter");
-
-    await conn.close();
+      // New row should be visible because Done defaults to false, which passes the filter
+      assert.equal(pane.rowIds.length, 2,
+        "New row with default Bool=false should pass the inclusion filter");
+    });
   });
 
   describe("filtering with real metadata", function() {
     it("filters a section with inclusion filter", async function() {
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      const setup = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          viewId: peoplePage.viewId,
+          sectionId: sec.sectionId,
+          nameColRef: findColRef(meta, sec.tableRef, "Name"),
+        };
+      });
 
-        // Find Name colRef
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let nameColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (colIds[i] === "Name" && parentIds[i] === sec.tableRef) {
-            nameColRef = colRefs[i];
-            break;
-          }
-        }
+      await applyUserActions(docId, [
+        ["AddRecord", "_grist_Filters", null, {
+          viewSectionRef: setup.sectionId,
+          colRef: setup.nameColRef,
+          filter: JSON.stringify({ included: ["Alice", "Charlie"] }),
+          pinned: true,
+        }],
+      ]);
 
-        // Add a filter: include only Alice and Charlie
-        await applyUserActions(docId, [
-          ["AddRecord", "_grist_Filters", null, {
-            viewSectionRef: sec.sectionId,
-            colRef: nameColRef,
-            filter: JSON.stringify({ included: ["Alice", "Charlie"] }),
-            pinned: true,
-          }],
-        ]);
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, setup.viewId)[0];
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
 
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        applySectionFilters(pane, sec2.sectionId, meta2);
-        assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
-
-        // Clean up: remove the filter
-        const filterData = meta2._grist_Filters;
-        if (filterData) {
-          const filterIds: number[] = filterData[2];
-          const filterVals = filterData[3];
-          for (let i = 0; i < filterIds.length; i++) {
-            if (filterVals.viewSectionRef[i] === sec2.sectionId) {
-              await applyUserActions(docId, [
-                ["RemoveRecord", "_grist_Filters", filterIds[i]],
-              ]);
-            }
-          }
-        }
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
+          applySectionFilters(pane, sec.sectionId, meta);
+          assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
+        });
+      } finally {
+        await withConnection(docId, async (conn) => {
+          await clearSectionFilters(docId, setup.sectionId, conn.getMetaTables());
+        });
       }
     });
 
     it("filters with range filter on Age", async function() {
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      const setup = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          viewId: peoplePage.viewId,
+          sectionId: sec.sectionId,
+          ageColRef: findColRef(meta, sec.tableRef, "Age"),
+        };
+      });
 
-        // Find Age colRef
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let ageColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (colIds[i] === "Age" && parentIds[i] === sec.tableRef) {
-            ageColRef = colRefs[i];
-            break;
-          }
-        }
+      await applyUserActions(docId, [
+        ["AddRecord", "_grist_Filters", null, {
+          viewSectionRef: setup.sectionId,
+          colRef: setup.ageColRef,
+          filter: JSON.stringify({ min: 28 }),
+          pinned: true,
+        }],
+      ]);
 
-        // Add a range filter: Age >= 28
-        await applyUserActions(docId, [
-          ["AddRecord", "_grist_Filters", null, {
-            viewSectionRef: sec.sectionId,
-            colRef: ageColRef,
-            filter: JSON.stringify({ min: 28 }),
-            pinned: true,
-          }],
-        ]);
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, setup.viewId)[0];
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
 
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        applySectionFilters(pane, sec2.sectionId, meta2);
-        // Bob (25) should be excluded, Alice (30) and Charlie (35) remain
-        assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
-        assert.deepEqual(pane.colValues.Age, [30, 35]);
-
-        // Clean up
-        const filterData = meta2._grist_Filters;
-        if (filterData) {
-          const filterIds: number[] = filterData[2];
-          const filterVals = filterData[3];
-          for (let i = 0; i < filterIds.length; i++) {
-            if (filterVals.viewSectionRef[i] === sec2.sectionId) {
-              await applyUserActions(docId, [
-                ["RemoveRecord", "_grist_Filters", filterIds[i]],
-              ]);
-            }
-          }
-        }
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
+          applySectionFilters(pane, sec.sectionId, meta);
+          // Bob (25) should be excluded, Alice (30) and Charlie (35) remain
+          assert.deepEqual(pane.colValues.Name, ["Alice", "Charlie"]);
+          assert.deepEqual(pane.colValues.Age, [30, 35]);
+        });
+      } finally {
+        await withConnection(docId, async (conn) => {
+          await clearSectionFilters(docId, setup.sectionId, conn.getMetaTables());
+        });
       }
     });
 
     it("combined sort and filter", async function() {
-      const conn = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-      try {
-        await conn.connect();
+      const setup = await withConnection(docId, async (conn) => {
         const meta = conn.getMetaTables();
-        const pages = extractPages(meta);
-        const peoplePage = pages.find(p => p.name.includes("People"))!;
-        const sections = extractSectionsForView(meta, peoplePage.viewId);
-        const sec = sections[0];
+        const peoplePage = extractPages(meta).find(p => p.name.includes("People"))!;
+        const sec = extractSectionsForView(meta, peoplePage.viewId)[0];
+        return {
+          viewId: peoplePage.viewId,
+          sectionId: sec.sectionId,
+          nameColRef: findColRef(meta, sec.tableRef, "Name"),
+          ageColRef: findColRef(meta, sec.tableRef, "Age"),
+        };
+      });
 
-        const colData = meta._grist_Tables_column;
-        const colIds: string[] = colData[3].colId;
-        const colRefs: number[] = colData[2];
-        const parentIds: number[] = colData[3].parentId;
-        let nameColRef = 0, ageColRef = 0;
-        for (let i = 0; i < colIds.length; i++) {
-          if (parentIds[i] !== sec.tableRef) { continue; }
-          if (colIds[i] === "Name") { nameColRef = colRefs[i]; }
-          if (colIds[i] === "Age") { ageColRef = colRefs[i]; }
-        }
+      await applyUserActions(docId, [
+        ["UpdateRecord", "_grist_Views_section", setup.sectionId,
+         { sortColRefs: JSON.stringify([-setup.nameColRef]) }],
+        ["AddRecord", "_grist_Filters", null, {
+          viewSectionRef: setup.sectionId,
+          colRef: setup.ageColRef,
+          filter: JSON.stringify({ min: 28 }),
+          pinned: true,
+        }],
+      ]);
 
-        // Sort by Name descending, filter Age >= 28
+      try {
+        await withConnection(docId, async (conn) => {
+          const meta = conn.getMetaTables();
+          const sec = extractSectionsForView(meta, setup.viewId)[0];
+          const data = await conn.fetchTable("People");
+          const columns = conn.getColumnsForSection(sec.sectionId);
+          const pane = buildPane(sec, columns, data.rowIds, data.colValues);
+
+          // Filter first, then sort (as reapplySortAndFilter does)
+          applySectionFilters(pane, sec.sectionId, meta);
+          applySortSpec(pane, sec.sortColRefs, meta);
+
+          // Bob (25) filtered out, remaining sorted desc by Name: Charlie, Alice
+          assert.deepEqual(pane.colValues.Name, ["Charlie", "Alice"]);
+          assert.deepEqual(pane.colValues.Age, [35, 30]);
+        });
+      } finally {
         await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: JSON.stringify([-nameColRef]) }],
-          ["AddRecord", "_grist_Filters", null, {
-            viewSectionRef: sec.sectionId,
-            colRef: ageColRef,
-            filter: JSON.stringify({ min: 28 }),
-            pinned: true,
-          }],
+          ["UpdateRecord", "_grist_Views_section", setup.sectionId, { sortColRefs: "" }],
         ]);
-
-        await conn.close();
-        const conn2 = new ConsoleConnection(SERVER_URL, docId, API_KEY);
-        await conn2.connect();
-        const meta2 = conn2.getMetaTables();
-        const sections2 = extractSectionsForView(meta2, peoplePage.viewId);
-        const sec2 = sections2[0];
-
-        const data = await conn2.fetchTable("People");
-        const columns = conn2.getColumnsForSection(sec2.sectionId);
-        const pane = buildPane(sec2, columns, data.rowIds, data.colValues);
-
-        // Filter first, then sort (as reapplySortAndFilter does)
-        applySectionFilters(pane, sec2.sectionId, meta2);
-        applySortSpec(pane, sec2.sortColRefs, meta2);
-
-        // Bob (25) filtered out, remaining sorted desc by Name: Charlie, Alice
-        assert.deepEqual(pane.colValues.Name, ["Charlie", "Alice"]);
-        assert.deepEqual(pane.colValues.Age, [35, 30]);
-
-        // Clean up
-        await applyUserActions(docId, [
-          ["UpdateRecord", "_grist_Views_section", sec.sectionId,
-           { sortColRefs: "" }],
-        ]);
-        const filterData = meta2._grist_Filters;
-        if (filterData) {
-          const filterIds: number[] = filterData[2];
-          const filterVals = filterData[3];
-          for (let i = 0; i < filterIds.length; i++) {
-            if (filterVals.viewSectionRef[i] === sec2.sectionId) {
-              await applyUserActions(docId, [
-                ["RemoveRecord", "_grist_Filters", filterIds[i]],
-              ]);
-            }
-          }
-        }
-        await conn2.close();
-      } catch (e) {
-        await conn.close().catch(() => {});
-        throw e;
+        await withConnection(docId, async (conn) => {
+          await clearSectionFilters(docId, setup.sectionId, conn.getMetaTables());
+        });
       }
     });
   });
@@ -1361,44 +1149,29 @@ describe("ConsoleConnection (integration)", function() {
         DateRefs: [["L", 1], ["L", 1, 2], ["L", 2], null],
       });
 
-      const conn = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-      await conn.connect();
-      const meta = conn.getMetaTables();
-
-      // Find sections and column refs
-      const pages = extractPages(meta);
-      const datesPage = pages.find(p => p.name.includes("Dates"));
-      assert.isOk(datesPage);
-      const datesSections = extractSectionsForView(meta, datesPage!.viewId);
-      const datesSec = datesSections[0];
-
-      const todoPage = pages.find(p => p.name.includes("ToDo"));
-      assert.isOk(todoPage);
-      const todoSections = extractSectionsForView(meta, todoPage!.viewId);
-      const todoSec = todoSections[0];
-
-      // Find DateRefs colRef
-      const colData = meta._grist_Tables_column;
-      const colIds: string[] = colData[3].colId;
-      const colRefs: number[] = colData[2];
-      const parentIdVals: number[] = colData[3].parentId;
-      let dateRefsColRef = 0;
-      for (let i = 0; i < colIds.length; i++) {
-        if (colIds[i] === "DateRefs" && parentIdVals[i] === todoSec.tableRef) {
-          dateRefsColRef = colRefs[i];
-          break;
-        }
-      }
-      assert.isAbove(dateRefsColRef, 0);
+      const setup = await withConnection(testDocId, async (conn) => {
+        const meta = conn.getMetaTables();
+        const pages = extractPages(meta);
+        const datesPage = pages.find(p => p.name.includes("Dates"))!;
+        const datesSec = extractSectionsForView(meta, datesPage.viewId)[0];
+        const todoPage = pages.find(p => p.name.includes("ToDo"))!;
+        const todoSec = extractSectionsForView(meta, todoPage.viewId)[0];
+        return {
+          datesTableRef: datesSec.tableRef,
+          todoTableRef: todoSec.tableRef,
+          dateRefsColRef: findColRef(meta, todoSec.tableRef, "DateRefs"),
+        };
+      });
+      assert.isAbove(setup.dateRefsColRef, 0);
 
       // Create a new page with both sections, link ToDo to Dates via DateRefs
       const r = await applyUserActions(testDocId, [
-        ["CreateViewSection", datesSec.tableRef, 0, "record", null, null],
+        ["CreateViewSection", setup.datesTableRef, 0, "record", null, null],
       ]);
       const newViewId = r.retValues[0].viewRef;
       const datesNewSecRef = r.retValues[0].sectionRef;
       const r2 = await applyUserActions(testDocId, [
-        ["CreateViewSection", todoSec.tableRef, newViewId, "record", null, null],
+        ["CreateViewSection", setup.todoTableRef, newViewId, "record", null, null],
       ]);
       const todoNewSecRef = r2.retValues[0].sectionRef;
 
@@ -1407,73 +1180,47 @@ describe("ConsoleConnection (integration)", function() {
         ["UpdateRecord", "_grist_Views_section", todoNewSecRef, {
           linkSrcSectionRef: datesNewSecRef,
           linkSrcColRef: 0,
-          linkTargetColRef: dateRefsColRef,
+          linkTargetColRef: setup.dateRefsColRef,
         }],
       ]);
 
-      await conn.close();
+      // Reconnect with fresh metadata and exercise linking
+      await withConnection(testDocId, async (conn) => {
+        const meta = conn.getMetaTables();
+        const newSections = extractSectionsForView(meta, newViewId);
+        assert.equal(newSections.length, 2);
 
-      // Reconnect with fresh metadata
-      const conn2 = new ConsoleConnection(SERVER_URL, testDocId, API_KEY);
-      await conn2.connect();
-      const meta2 = conn2.getMetaTables();
-      const newSections = extractSectionsForView(meta2, newViewId);
-      assert.equal(newSections.length, 2);
+        const datesSecInfo = newSections.find(s => s.sectionId === datesNewSecRef)!;
+        const todoSecInfo = newSections.find(s => s.sectionId === todoNewSecRef)!;
 
-      const datesSecInfo = newSections.find(s => s.sectionId === datesNewSecRef)!;
-      const todoSecInfo = newSections.find(s => s.sectionId === todoNewSecRef)!;
+        const datesData = await conn.fetchTable("Dates");
+        const todoData = await conn.fetchTable("ToDo");
+        const datesColumns = conn.getColumnsForSection(datesSecInfo.sectionId);
+        const todoColumns = conn.getColumnsForSection(todoSecInfo.sectionId);
 
-      // Fetch data
-      const datesData = await conn2.fetchTable("Dates");
-      const todoData = await conn2.fetchTable("ToDo");
-      const datesColumns = conn2.getColumnsForSection(datesSecInfo.sectionId);
-      const todoColumns = conn2.getColumnsForSection(todoSecInfo.sectionId);
+        const datesPane = buildPane(datesSecInfo, datesColumns, datesData.rowIds, datesData.colValues);
+        const todoPane = buildPane(todoSecInfo, todoColumns, todoData.rowIds, todoData.colValues);
 
-      // Build panes
-      const datesPane = buildPane(datesSecInfo, datesColumns, datesData.rowIds, datesData.colValues);
-      const todoPane = buildPane(todoSecInfo, todoColumns, todoData.rowIds, todoData.colValues);
+        // Helper: filter todo pane to tasks whose DateRefs contains srcRowId
+        const tasksLinkedTo = (srcRowId: number): string[] => {
+          const dateRefsValues = todoPane.colValues.DateRefs;
+          const matches: string[] = [];
+          for (let i = 0; i < todoPane.rowIds.length; i++) {
+            const val = dateRefsValues[i];
+            if (Array.isArray(val) && val[0] === "L" && val.indexOf(srcRowId) > 0) {
+              matches.push(todoPane.colValues.Task[i] as string);
+            }
+          }
+          return matches;
+        };
 
-      // Simulate linking: Dates cursor on row 0 (Mon, rowId=1)
-      datesPane.cursorRow = 0;
-      const srcRowId = datesPane.rowIds[0]; // should be 1
-
-      // Filter todo pane by DateRefs containing srcRowId
-      const filteredRowIds: number[] = [];
-      const dateRefsValues = todoPane.colValues.DateRefs;
-      for (let i = 0; i < todoPane.rowIds.length; i++) {
-        const val = dateRefsValues[i];
-        const match = (Array.isArray(val) && val[0] === "L" && val.indexOf(srcRowId) > 0);
-        if (match) {
-          filteredRowIds.push(todoPane.rowIds[i]);
-        }
-      }
-
-      // Tasks A and B reference Mon (rowId 1)
-      const filteredTasks = filteredRowIds.map(rid => {
-        const idx = todoPane.rowIds.indexOf(rid);
-        return todoPane.colValues.Task[idx];
+        // Tasks A and B reference Mon (rowId 1)
+        assert.deepEqual(tasksLinkedTo(datesPane.rowIds[0]), ["Task A", "Task B"],
+          "Should show tasks whose DateRefs contains Mon (rowId 1)");
+        // Tasks B and C reference Tue (rowId 2)
+        assert.deepEqual(tasksLinkedTo(datesPane.rowIds[1]), ["Task B", "Task C"],
+          "Should show tasks whose DateRefs contains Tue (rowId 2)");
       });
-      assert.deepEqual(filteredTasks, ["Task A", "Task B"],
-        "Should show tasks whose DateRefs contains Mon (rowId 1)");
-
-      // Now test with Dates cursor on row 1 (Tue, rowId=2)
-      const srcRowId2 = datesPane.rowIds[1]; // should be 2
-      const filteredRowIds2: number[] = [];
-      for (let i = 0; i < todoPane.rowIds.length; i++) {
-        const val = dateRefsValues[i];
-        const match = (Array.isArray(val) && val[0] === "L" && val.indexOf(srcRowId2) > 0);
-        if (match) {
-          filteredRowIds2.push(todoPane.rowIds[i]);
-        }
-      }
-      const filteredTasks2 = filteredRowIds2.map(rid => {
-        const idx = todoPane.rowIds.indexOf(rid);
-        return todoPane.colValues.Task[idx];
-      });
-      assert.deepEqual(filteredTasks2, ["Task B", "Task C"],
-        "Should show tasks whose DateRefs contains Tue (rowId 2)");
-
-      await conn2.close();
     });
   });
 });

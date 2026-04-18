@@ -9,6 +9,8 @@
 
 import { execSync } from "child_process";
 import http from "http";
+import fetch from "node-fetch";
+import { ConsoleConnection } from "../src/ConsoleConnection.js";
 
 const GRIST_PORT = Number(process.env.GRIST_PORT || 8585);
 const GRIST_IMAGE = process.env.GRIST_IMAGE || "gristlabs/grist";
@@ -17,6 +19,26 @@ const API_KEY = "api_key_for_console_test";
 
 export const SERVER_URL = process.env.GRIST_SERVER || `http://localhost:${GRIST_PORT}`;
 export { API_KEY };
+
+const AUTH_HEADERS = {
+  "Authorization": `Bearer ${API_KEY}`,
+  "Content-Type": "application/json",
+};
+
+/** POST/PATCH/etc. to the Grist REST API with the support API key. */
+async function apiRequest(
+  method: string, path: string, body?: any,
+): Promise<any> {
+  const resp = await fetch(`${SERVER_URL}${path}`, {
+    method,
+    headers: AUTH_HEADERS,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text()}`);
+  }
+  return resp.json();
+}
 
 /**
  * Start the Grist Docker container.
@@ -95,138 +117,73 @@ function sleep(ms: number) {
 }
 
 /**
- * Convenience: create a workspace and document via the REST API.
- * Returns { workspaceId, docId }.
+ * Create a workspace + document via the REST API. If `share` is "public",
+ * grants editor access to everyone (so WebSocket connects without the
+ * support user's session can open the doc).
  */
-export async function createTestDoc(name: string): Promise<{ workspaceId: number; docId: string }> {
-  const fetch = (await import("node-fetch")).default;
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
-  };
-
-  // List orgs to get the default org
-  const orgsResp = await fetch(`${SERVER_URL}/api/orgs`, { headers });
-  const orgs = await orgsResp.json() as any[];
+async function makeTestDoc(
+  name: string, share: "public" | "private",
+): Promise<{ workspaceId: number; docId: string }> {
+  const orgs = await apiRequest("GET", "/api/orgs") as any[];
   const orgId = orgs[0].id;
 
-  // Create workspace
-  const wsResp = await fetch(`${SERVER_URL}/api/orgs/${orgId}/workspaces`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name: `console-test-${Date.now()}` }),
-  });
-  const workspaceId = await wsResp.json() as number;
+  const wsName = `console-test${share === "private" ? "-private" : ""}-${Date.now()}`;
+  const workspaceId = await apiRequest(
+    "POST", `/api/orgs/${orgId}/workspaces`, { name: wsName }
+  ) as number;
 
-  // Create document
-  const docResp = await fetch(`${SERVER_URL}/api/workspaces/${workspaceId}/docs`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name }),
-  });
-  const docId = await docResp.json() as string;
+  const docId = await apiRequest(
+    "POST", `/api/workspaces/${workspaceId}/docs`, { name }
+  ) as string;
 
-  // Make the document public so WebSocket connections (which may not carry
-  // the support user's session) can open it.
-  await fetch(`${SERVER_URL}/api/docs/${docId}/access`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify({
+  if (share === "public") {
+    await apiRequest("PATCH", `/api/docs/${docId}/access`, {
       delta: { users: { "everyone@getgrist.com": "editors" } },
-    }),
-  });
-
+    });
+  }
   return { workspaceId, docId };
 }
 
-/**
- * Like createTestDoc but does NOT grant public access -- the doc is only
- * accessible with the support API key.
- */
-export async function createPrivateTestDoc(name: string): Promise<{ workspaceId: number; docId: string }> {
-  const fetch = (await import("node-fetch")).default;
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
-  };
+/** Create a test document accessible to everyone (default for tests). */
+export function createTestDoc(name: string) { return makeTestDoc(name, "public"); }
 
-  const orgsResp = await fetch(`${SERVER_URL}/api/orgs`, { headers });
-  const orgs = await orgsResp.json() as any[];
-  const orgId = orgs[0].id;
+/** Create a test document accessible only via the support API key. */
+export function createPrivateTestDoc(name: string) { return makeTestDoc(name, "private"); }
 
-  const wsResp = await fetch(`${SERVER_URL}/api/orgs/${orgId}/workspaces`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name: `console-test-private-${Date.now()}` }),
-  });
-  const workspaceId = await wsResp.json() as number;
+/** Apply user actions to a document via the REST API. */
+export function applyUserActions(docId: string, actions: any[]): Promise<any> {
+  return apiRequest("POST", `/api/docs/${docId}/apply`, actions);
+}
 
-  const docResp = await fetch(`${SERVER_URL}/api/workspaces/${workspaceId}/docs`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name }),
-  });
-  const docId = await docResp.json() as string;
+/** Add rows to a table via the REST API. */
+export function addRows(
+  docId: string, tableId: string, colValues: Record<string, any[]>,
+): Promise<any> {
+  return apiRequest("POST", `/api/docs/${docId}/tables/${tableId}/data`, colValues);
+}
 
-  return { workspaceId, docId };
+/** Update rows in a table via the REST API. */
+export function updateRows(
+  docId: string, tableId: string, data: { id: number[] } & Record<string, any[]>,
+): Promise<any> {
+  return apiRequest("PATCH", `/api/docs/${docId}/tables/${tableId}/data`, data);
 }
 
 /**
- * Apply user actions to a document via the REST API.
+ * Open a ConsoleConnection, run the body with it, and always close it
+ * afterward (even on exceptions). The default auth is the support API key;
+ * pass `{ apiKey }` to override or pass undefined for an anonymous connection.
  */
-export async function applyUserActions(docId: string, actions: any[]): Promise<any> {
-  const fetch = (await import("node-fetch")).default;
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
-  };
-  const resp = await fetch(`${SERVER_URL}/api/docs/${docId}/apply`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(actions),
-  });
-  if (!resp.ok) {
-    throw new Error(`applyUserActions failed: ${resp.status} ${await resp.text()}`);
-  }
-  return resp.json();
-}
-
-/**
- * Add rows to a table via the REST API.
- */
-export async function addRows(docId: string, tableId: string, colValues: Record<string, any[]>): Promise<void> {
-  const fetch = (await import("node-fetch")).default;
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
-  };
-  const resp = await fetch(`${SERVER_URL}/api/docs/${docId}/tables/${tableId}/data`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(colValues),
-  });
-  if (!resp.ok) {
-    throw new Error(`addRows failed: ${resp.status} ${await resp.text()}`);
-  }
-}
-
-/**
- * Update rows in a table via the REST API.
- */
-export async function updateRows(
-  docId: string, tableId: string, data: { id: number[] } & Record<string, any[]>
-): Promise<void> {
-  const fetch = (await import("node-fetch")).default;
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
-  };
-  const resp = await fetch(`${SERVER_URL}/api/docs/${docId}/tables/${tableId}/data`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify(data),
-  });
-  if (!resp.ok) {
-    throw new Error(`updateRows failed: ${resp.status} ${await resp.text()}`);
+export async function withConnection<T>(
+  docId: string,
+  body: (conn: ConsoleConnection) => Promise<T>,
+  options: { apiKey?: string } = { apiKey: API_KEY },
+): Promise<T> {
+  const conn = new ConsoleConnection(SERVER_URL, docId, options.apiKey);
+  await conn.connect();
+  try {
+    return await body(conn);
+  } finally {
+    await conn.close();
   }
 }
