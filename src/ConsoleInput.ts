@@ -379,8 +379,9 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
   const pane = state.panes[state.focusedPane];
   if (!pane) { return { type: "none" }; }
 
+  const leaf = getLeafForPane(state, state.focusedPane);
   if (isCardPane(pane)) {
-    return handleCardPaneKey(key, state, pane);
+    return handleCardPaneKey(key, state, pane, leaf);
   }
 
   switch (key) {
@@ -413,7 +414,6 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
     }
   }
 
-  const leaf = getLeafForPane(state, state.focusedPane);
   const availWidth = leaf?.width || (process.stdout.columns || 80);
   return handleGridViewKey(key, state, pane, availWidth);
 }
@@ -422,7 +422,9 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
  * Handle keys for a card (single/detail) pane.
  * Up/down navigates fields, left/right switches records.
  */
-function handleCardPaneKey(key: string, state: AppState, pane: PaneState): InputAction {
+function handleCardPaneKey(
+  key: string, state: AppState, pane: PaneState, leaf?: LayoutNode
+): InputAction {
   switch (key) {
     case "tab":
       return { type: "focus_next_pane" };
@@ -443,7 +445,6 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
         pane.cursorCol++;
         // scrollCol is used as field scroll offset in card mode
         // Leaf height minus title bar = available field rows
-        const leaf = getLeafForPane(state, state.focusedPane);
         const fieldRows = leaf ? leaf.height - 1 : 10;
         if (pane.cursorCol >= pane.scrollCol + fieldRows) {
           pane.scrollCol = pane.cursorCol - fieldRows + 1;
@@ -487,7 +488,7 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
     }
     case "enter":
       if (pane.rowIds.length > 0 && pane.columns.length > 0) {
-        enterPaneEditMode(state);
+        enterPaneEditMode(state, pane);
       }
       return { type: "render" };
     case "a":
@@ -515,8 +516,7 @@ function handleCardPaneKey(key: string, state: AppState, pane: PaneState): Input
   }
 }
 
-function enterPaneEditMode(state: AppState, overridePane?: PaneState): void {
-  const pane = overridePane || state.panes[state.focusedPane];
+function enterPaneEditMode(state: AppState, pane: PaneState): void {
   if (!pane) { return; }
   const col = pane.columns[pane.cursorCol];
   const values = pane.colValues[col.colId];
@@ -615,13 +615,14 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
   if (key === "escape") { return { type: "close_overlay" }; }
 
   if (isCardPane(pane)) {
-    // Card-pane handler reads state.focusedPane; in overlay mode the user is
-    // interacting with the overlay pane, so pretend it's focused for this call.
-    const savedFocused = state.focusedPane;
-    state.focusedPane = state.overlayPaneIndex;
-    const result = handleCardPaneKey(key, state, pane);
-    state.focusedPane = savedFocused;
-    return result;
+    // Overlay fills the screen, so the leaf is the full terminal.
+    const overlayLeaf: LayoutNode = {
+      top: 0, left: 0,
+      width: process.stdout.columns || 80,
+      height: (process.stdout.rows || 24) - 2,
+      paneIndex: state.overlayPaneIndex,
+    };
+    return handleCardPaneKey(key, state, pane, overlayLeaf);
   }
 
   return handleGridViewKey(key, state, pane, process.stdout.columns || 80);

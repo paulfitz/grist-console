@@ -156,9 +156,7 @@ export async function consoleMain(options: {
         case "select_table":
           state.currentTableId = state.tableIds[state.selectedTableIndex];
           state.statusMessage = "Loading...";
-          state.panes = [];
-          state.layout = null;
-          state.boxSpec = null;
+          clearViewState(state);
           doRender(state);
           try {
             await loadTable(state, conn);
@@ -219,17 +217,13 @@ export async function consoleMain(options: {
           break;
         case "switch_to_tables":
           state.mode = "table_picker";
-          state.panes = [];
-          state.layout = null;
-          state.boxSpec = null;
+          clearViewState(state);
           state.statusMessage = "";
           doRender(state);
           break;
         case "switch_to_pages":
           state.mode = "page_picker";
-          state.panes = [];
-          state.layout = null;
-          state.boxSpec = null;
+          clearViewState(state);
           state.statusMessage = "";
           doRender(state);
           break;
@@ -321,6 +315,19 @@ export function getVisualPaneOrder(state: AppState): number[] {
 }
 
 /**
+ * Drop all loaded view state (panes, layout, box spec). Used when leaving
+ * grid mode for a picker, or when a load is about to start.
+ */
+function clearViewState(state: AppState): void {
+  state.panes = [];
+  state.layout = null;
+  state.boxSpec = null;
+  state.focusedPane = 0;
+  state.overlayPaneIndex = null;
+  state.collapsedPaneIndices = [];
+}
+
+/**
  * Move focus to the next pane in visual order. direction=1 for next, -1 for prev.
  */
 function cyclePane(state: AppState, direction: 1 | -1): void {
@@ -394,8 +401,7 @@ async function loadPage(state: AppState, conn: ConsoleConnection, viewId: number
   const sections = extractSectionsForView(metaTables, viewId);
 
   if (sections.length === 0) {
-    state.panes = [];
-    state.layout = null;
+    clearViewState(state);
     state.statusMessage = "No sections on this page";
     return;
   }
