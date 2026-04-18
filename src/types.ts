@@ -83,3 +83,11 @@ export interface ColumnInfo {
 export function isHiddenCol(colId: string): boolean {
   return colId.startsWith("gristHelper_") || colId === "manualSort";
 }
+
+/**
+ * Strip the parameter from a Grist column type. "Ref:Foo" -> "Ref",
+ * "RefList:Bar" -> "RefList", "Text" -> "Text".
+ */
+export function getBaseType(colType: string): string {
+  return colType.split(":")[0];
+}

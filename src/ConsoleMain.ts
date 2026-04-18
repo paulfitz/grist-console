@@ -1,4 +1,4 @@
-import { BulkColValues, ColumnInfo } from "./types.js";
+import { BulkColValues, ColumnInfo, getBaseType } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
 import { render, showCursor } from "./ConsoleRenderer.js";
@@ -365,7 +365,7 @@ async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void
 async function resolveDisplayValues(columns: ColumnInfo[], conn: ConsoleConnection): Promise<void> {
   const metaTables = conn.getMetaTables();
   for (const col of columns) {
-    const baseType = col.type.split(":")[0];
+    const baseType = getBaseType(col.type);
     if ((baseType !== "Ref" && baseType !== "RefList") || !col.visibleCol) {
       continue;
     }

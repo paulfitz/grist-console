@@ -125,3 +125,19 @@ export function editReturnMode(state: AppState): AppMode {
   if (state.overlayPaneIndex !== null) { return "overlay"; }
   return "grid";
 }
+
+/**
+ * Resolve the Grist tableId backing a pane. Multi-section panes carry it
+ * on their sectionInfo; single-table mode falls back to the loaded table.
+ */
+export function paneTableId(pane: PaneState, state: AppState): string {
+  return pane.sectionInfo?.tableId || state.currentTableId;
+}
+
+/**
+ * Human-readable title for a pane: the section's display title if set,
+ * else the tableId, else empty.
+ */
+export function paneTitle(pane: PaneState): string {
+  return pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
+}

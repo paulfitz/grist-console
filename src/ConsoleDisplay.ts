@@ -8,7 +8,7 @@
  */
 
 import stringWidth from "string-width";
-import { CellValue } from "./types.js";
+import { CellValue, getBaseType } from "./types.js";
 import { getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides } from "./termWidth.js";
 
 // ANSI escape codes (non-stylistic, always needed)
@@ -34,8 +34,7 @@ export function extractUrls(s: string): string[] {
  * Uses string-width, with terminal-measured overrides for known-problematic characters.
  */
 export function displayWidth(s: string): number {
-  // Strip ANSI escape codes before measuring
-  const clean = s.replace(/\x1b\[[0-9;]*m/g, "");
+  const clean = stripAnsi(s);
   const flagPairDelta = getFlagPairDelta();
   const vs16Delta = getVs16Delta();
   // When no calibration has detected any discrepancy, trust string-width fully
@@ -167,7 +166,7 @@ export function hexToAnsi(hex: string, bg: boolean): string {
  */
 export function applyChoiceColor(formatted: string, value: CellValue, colType: string, widgetOpts?: Record<string, any>): string {
   if (!widgetOpts?.choiceOptions) { return formatted; }
-  const baseType = colType.split(":")[0];
+  const baseType = getBaseType(colType);
   const opts = widgetOpts.choiceOptions as Record<string, { fillColor?: string; textColor?: string }>;
 
   if (baseType === "Choice") {

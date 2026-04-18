@@ -9,7 +9,7 @@
  */
 
 import { CellValue } from "./types.js";
-import { AppState, activeView, editReturnMode } from "./ConsoleAppState.js";
+import { AppState, activeView, editReturnMode, paneTableId } from "./ConsoleAppState.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 import { parseCellInput } from "./ConsoleCellFormat.js";
 
@@ -20,7 +20,7 @@ import { parseCellInput } from "./ConsoleCellFormat.js";
 export async function executeSaveEdit(state: AppState, conn: ConsoleConnection): Promise<void> {
   const pane = activeView(state);
   if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const tableId = paneTableId(pane, state);
   const col = pane.columns[pane.cursorCol];
   const rowId = pane.rowIds[pane.cursorRow];
 
@@ -33,9 +33,7 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
   } catch (e: any) {
     state.statusMessage = `Error: ${e.message}`;
   }
-  // Return to cell viewer/overlay/grid as appropriate
   state.mode = editReturnMode(state);
-  // If returning to cell viewer, update the content with the saved value
   if (state.mode === "cell_viewer") {
     state.cellViewerContent = state.editValue;
   }
@@ -48,7 +46,7 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
 export async function executeAddRow(state: AppState, conn: ConsoleConnection): Promise<void> {
   const pane = activeView(state);
   if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const tableId = paneTableId(pane, state);
   const manualSort = computeInsertManualSort(pane.colValues.manualSort, pane.cursorRow, pane.rowIds.length);
   try {
     const payload: Record<string, any> = {};
@@ -89,7 +87,7 @@ export function computeInsertManualSort(
 export async function executeDeleteRow(state: AppState, conn: ConsoleConnection): Promise<void> {
   const pane = activeView(state);
   if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const tableId = paneTableId(pane, state);
   const rowId = pane.rowIds[pane.cursorRow];
 
   try {

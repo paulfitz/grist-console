@@ -10,8 +10,8 @@
  * the caller sets a status message asking the user to refresh.
  */
 
-import { BulkColValues, CellValue, ColumnInfo, DocAction } from "./types.js";
-import { AppState, PaneState } from "./ConsoleAppState.js";
+import { BulkColValues, CellValue, ColumnInfo, DocAction, getBaseType } from "./types.js";
+import { AppState, PaneState, paneTableId } from "./ConsoleAppState.js";
 
 /**
  * Apply incoming DocActions to local state for live updates.
@@ -28,8 +28,7 @@ export function applyDocActions(state: AppState, actions: DocAction[]): void {
       continue;
     }
     for (const pane of state.panes) {
-      const paneTable = pane.sectionInfo?.tableId || state.currentTableId;
-      if (paneTable === tableId) {
+      if (paneTableId(pane, state) === tableId) {
         applyDocActionToPane(pane, action);
       }
     }
@@ -42,7 +41,7 @@ export function applyDocActions(state: AppState, actions: DocAction[]): void {
  * applyAllSectionLinks afterward, but mirroring here keeps the UI consistent
  * before that re-filter runs.
  */
-export function applyDocActionToPane(pane: PaneState, action: DocAction): void {
+function applyDocActionToPane(pane: PaneState, action: DocAction): void {
   const actionType = action[0];
 
   switch (actionType) {
@@ -53,12 +52,20 @@ export function applyDocActionToPane(pane: PaneState, action: DocAction): void {
     }
     case "BulkUpdateRecord": {
       const [, , rowIds, colValues] = action as any;
+      // Build row-id -> index maps once so each per-row update is O(1).
+      const allIdx = indexMap(pane.allRowIds);
+      const visIdx = indexMap(pane.rowIds);
       for (let i = 0; i < rowIds.length; i++) {
-        const perRow: Record<string, CellValue> = {};
+        const allI = allIdx.get(rowIds[i]);
+        const visI = visIdx.get(rowIds[i]);
         for (const [colId, values] of Object.entries(colValues as Record<string, CellValue[]>)) {
-          perRow[colId] = values[i];
+          if (allI !== undefined && pane.allColValues[colId]) {
+            pane.allColValues[colId][allI] = values[i];
+          }
+          if (visI !== undefined && pane.colValues[colId]) {
+            pane.colValues[colId][visI] = values[i];
+          }
         }
-        updateRowInPane(pane, rowIds[i], perRow);
       }
       break;
     }
@@ -133,7 +140,7 @@ export function appendRowToColValues(
  * AddRecord action.
  */
 function defaultForColumnType(colType: string): CellValue {
-  const baseType = colType.split(":")[0];
+  const baseType = getBaseType(colType);
   switch (baseType) {
     case "Bool": return false;
     case "Int":
@@ -146,8 +153,6 @@ function defaultForColumnType(colType: string): CellValue {
     default: return null;
   }
 }
-
-// Helpers below mutate both the unfiltered (all*) arrays and the visible view.
 
 function updateRowInPane(pane: PaneState, rowId: number, colValues: Record<string, CellValue>): void {
   const allIdx = pane.allRowIds.indexOf(rowId);
@@ -203,4 +208,10 @@ function clampCursorRow(pane: PaneState): void {
   if (pane.cursorRow >= pane.rowIds.length && pane.cursorRow > 0) {
     pane.cursorRow = pane.rowIds.length - 1;
   }
+}
+
+function indexMap(rowIds: number[]): Map<number, number> {
+  const m = new Map<number, number>();
+  for (let i = 0; i < rowIds.length; i++) { m.set(rowIds[i], i); }
+  return m;
 }

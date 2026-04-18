@@ -1,4 +1,4 @@
-import { CellValue, ColumnInfo, GristObjCode } from "./types.js";
+import { CellValue, ColumnInfo, GristObjCode, getBaseType } from "./types.js";
 
 /**
  * Simple moment-style date format using native JS Date.
@@ -167,7 +167,7 @@ export function formatCellValue(value: CellValue, colType?: string, widgetOpts?:
   }
   if (typeof value === "number") {
     if (colType) {
-      const baseType = colType.split(":")[0];
+      const baseType = getBaseType(colType);
       if (baseType === "Date") {
         return formatDateValue(value, widgetOpts);
       }
@@ -243,7 +243,7 @@ export function formatCellValue(value: CellValue, colType?: string, widgetOpts?:
  * Parse a user-entered string back to a CellValue, based on column type.
  */
 export function parseCellInput(input: string, colType: string): CellValue {
-  const baseType = colType.split(":")[0];
+  const baseType = getBaseType(colType);
   switch (baseType) {
     case "Bool": {
       const lower = input.toLowerCase().trim();

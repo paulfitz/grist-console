@@ -15,7 +15,7 @@
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { LayoutNode, collectLeaves } from "./ConsoleLayout.js";
 import { Theme } from "./ConsoleTheme.js";
-import { AppMode, AppState, PaneState, isCardPane } from "./ConsoleAppState.js";
+import { AppMode, AppState, PaneState, isCardPane, paneTitle } from "./ConsoleAppState.js";
 import {
   HIDE_CURSOR, SHOW_CURSOR, MOVE_TO,
   displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
@@ -106,7 +106,7 @@ function renderCollapsedTray(state: AppState, termCols: number): string {
     const paneIdx = state.collapsedPaneIndices[i];
     const pane = state.panes[paneIdx];
     if (!pane) { continue; }
-    const name = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
+    const name = paneTitle(pane);
     const label = ` ${i + 1}:${name} `;
     tray += t.titleBar(label) + " ";
   }
@@ -203,14 +203,9 @@ function renderPaneInto(
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
   // Title bar (row 0)
-  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
+  const tableName = paneTitle(pane);
   const rowCount = pane.rowIds.length;
-  const titleText = ` ${tableName} (${rowCount}) `;
-  const titleLine = truncate(titleText, width);
-  const titleStyled = isFocused
-    ? t.titleBar(padRight(titleLine, width))
-    : t.titleBarDim(padRight(titleLine, width));
-  writeToBuffer(buf, top, left, titleStyled, width);
+  writeTitleBar(buf, leaf, ` ${tableName} (${rowCount}) `, isFocused, t);
 
   const minHeight = t.headerSepLine ? 4 : 3;
   if (height < minHeight) { return; }
@@ -286,23 +281,20 @@ function renderCardPaneInto(
   const { top, left, width, height } = leaf;
 
   // Title bar (row 0)
-  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
+  const tableName = paneTitle(pane);
   const rowCount = pane.rowIds.length;
   const recNum = rowCount > 0 ? pane.cursorRow + 1 : 0;
-  const titleText = ` ${tableName} (${recNum}/${rowCount}) `;
-  const titleLine = truncate(titleText, width);
-  const titleStyled = isFocused
-    ? t.titleBar(padRight(titleLine, width))
-    : t.titleBarDim(padRight(titleLine, width));
-  writeToBuffer(buf, top, left, titleStyled, width);
+  writeTitleBar(buf, leaf, ` ${tableName} (${recNum}/${rowCount}) `, isFocused, t);
 
   if (height < 3 || rowCount === 0) { return; }
 
   // Compute label width (max label length)
-  const labelWidth = Math.min(
-    Math.max(6, ...pane.columns.map(c => displayWidth(c.label))),
-    Math.floor(width / 3),
-  );
+  let maxLabelWidth = 6;
+  for (const c of pane.columns) {
+    const w = displayWidth(c.label);
+    if (w > maxLabelWidth) { maxLabelWidth = w; }
+  }
+  const labelWidth = Math.min(maxLabelWidth, Math.floor(width / 3));
   const cardSep = t.colSeparator;
   const valueWidth = Math.max(4, width - labelWidth - cardSep.length);
 
@@ -341,13 +333,8 @@ function renderChartPlaceholder(
 ): void {
   const { top, left, width, height } = leaf;
 
-  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
-  const titleText = ` ${tableName} [chart] `;
-  const titleLine = truncate(titleText, width);
-  const titleStyled = isFocused
-    ? t.titleBar(padRight(titleLine, width))
-    : t.titleBarDim(padRight(titleLine, width));
-  writeToBuffer(buf, top, left, titleStyled, width);
+  const tableName = paneTitle(pane);
+  writeTitleBar(buf, leaf, ` ${tableName} [chart] `, isFocused, t);
 
   if (height >= 3) {
     const msg = "(chart not supported in console)";
@@ -359,6 +346,18 @@ function renderChartPlaceholder(
  * Write a styled string into the character buffer at a given position.
  * We write the raw string; ANSI codes pass through since buf cells are joined.
  */
+/**
+ * Render a pane's title bar text and write it into the buffer at the leaf's
+ * top-left corner. Focused panes get the bright title style; others are dim.
+ */
+function writeTitleBar(
+  buf: string[][], leaf: LayoutNode, titleText: string, isFocused: boolean, t: Theme,
+): void {
+  const padded = padRight(truncate(titleText, leaf.width), leaf.width);
+  const styled = isFocused ? t.titleBar(padded) : t.titleBarDim(padded);
+  writeToBuffer(buf, leaf.top, leaf.left, styled, leaf.width);
+}
+
 function writeToBuffer(buf: string[][], row: number, col: number, text: string, maxWidth: number): void {
   if (row < 0 || row >= buf.length) { return; }
   // Replace the entire row segment with the text (ANSI codes make char counting unreliable,
