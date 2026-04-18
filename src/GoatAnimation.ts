@@ -19,40 +19,79 @@ interface GoatPos {
   colIdx: number;
 }
 
+type GoatDir = "left" | "right";
+
 interface GoatState extends GoatPos {
   /** Oldest trail cell is last; newest first. */
   trail: GoatPos[];
-  /** Which frame of the chew cycle -- flips on each step so the sprite bobs. */
+  /** Step counter -- drives the animation frame cycle. */
   frame: number;
   /** What the goat is currently eating, as a short display string. */
   snack: string;
   /** Running tally of cells the goat has visited. */
   munchCount: number;
+  /** Which way is the goat facing? Flips when it moves horizontally. */
+  dir: GoatDir;
 }
 
 const MAX_TRAIL = 3;
 
-// Multi-line ASCII goat sprite. Two frames so the mouth chews. Written
-// onto the screen at the goat's computed screen position after the normal
-// render finishes, so the art spans cell boundaries cleanly.
-const SPRITE_FRAMES: string[][] = [
-  // Frame 0 -- eyes open, mouth closed
+// Compact side-view goat sprite, inspired by ejm97's classic ASCII goat.
+// Each direction has three frames: two walking (alternating legs) and one
+// grazing (head down, eating). Cycling through them gives a natural
+// "wander - wander - nibble" rhythm.
+//
+// All frames are 4 rows × 8 cols. Padding with spaces keeps the right edge
+// stable so frame transitions don't jitter.
+const FRAMES_RIGHT: string[][] = [
+  // Walk, left legs forward
   [
-    " ,,_,, ",
-    "(o   o)",
-    " \\_V_/ ",
-    "  \"U\"  ",
+    "  ,__, >",
+    "  (--)_'",
+    "  /|  |\\",
+    "  /    \\",
   ],
-  // Frame 1 -- chewing (mouth open)
+  // Walk, right legs forward
   [
-    " ,,_,, ",
-    "(O   O)",
-    " \\___/ ",
-    "  \"U\"  ",
+    "  ,__, >",
+    "  (--)_'",
+    "  \\|  |/",
+    "   \\  / ",
+  ],
+  // Grazing: head dipped to the ground, back arched
+  [
+    "         ",
+    "    ,__ >",
+    "   (\\_/)'",
+    "   /~~~~~",
   ],
 ];
-const SPRITE_ROWS = SPRITE_FRAMES[0].length;
-const SPRITE_COLS = SPRITE_FRAMES[0][0].length;
+const FRAMES_LEFT: string[][] = [
+  // Walk, right legs forward
+  [
+    "< ,__,  ",
+    "`_(--)  ",
+    "/|  |\\  ",
+    "/    \\  ",
+  ],
+  // Walk, left legs forward
+  [
+    "< ,__,  ",
+    "`_(--)  ",
+    "\\|  |/  ",
+    " \\  /   ",
+  ],
+  // Grazing: head dipped, back arched
+  [
+    "         ",
+    "< __,    ",
+    "`(\\_/)   ",
+    "~~~~\\    ",
+  ],
+];
+const SPRITE_ROWS = FRAMES_RIGHT[0].length;
+// A full cycle is walk / walk / graze, so frame 2 of every 3 is the graze.
+const GRAZE_FRAME_MOD = 3;
 
 // Trail: a small flower at cells the goat was recently on.
 const TRAIL_CHARS = [",*,", ".o.", " . "];
@@ -161,12 +200,22 @@ export function stepGoat(state: AppState): boolean {
   const text = col ? flattenToLine(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues)) : "";
   const snack = text ? text.slice(0, 20) : "(empty)";
 
+  // Infer the goat's facing direction from the horizontal move. Vertical
+  // moves and teleports preserve the previous direction (goat keeps
+  // looking where it was looking).
+  let dir: GoatDir = _goat?.dir ?? "right";
+  if (_goat && _goat.paneIdx === paneIdx) {
+    if (next.colIdx > _goat.colIdx) { dir = "right"; }
+    else if (next.colIdx < _goat.colIdx) { dir = "left"; }
+  }
+
   _goat = {
     ...next,
     trail: carryTrail,
     frame: (_goat?.frame ?? 0) + 1,
     snack,
     munchCount: (_goat?.munchCount ?? 0) + 1,
+    dir,
   };
   return true;
 }
@@ -250,9 +299,11 @@ export function renderGoatOverlay(
 
   // Goat sprite -- written line by line at the goat's anchor cell, shifted
   // one line up so the face sits roughly on the goat's row rather than
-  // starting below it.
+  // starting below it. Frame cycle: walk / walk / graze. Left/right
+  // frame set chosen by the goat's last horizontal move.
   if (_goat.rowIdx < pane.scrollRow) { return out; }
-  const frame = SPRITE_FRAMES[_goat.frame % SPRITE_FRAMES.length];
+  const frameSet = _goat.dir === "left" ? FRAMES_LEFT : FRAMES_RIGHT;
+  const frame = frameSet[_goat.frame % GRAZE_FRAME_MOD];
   const anchorRow = cellScreenRow(_goat.rowIdx) - 1;
   const anchorCol = cellScreenCol(_goat.colIdx);
   for (let r = 0; r < frame.length; r++) {

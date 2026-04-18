@@ -2575,8 +2575,10 @@ describe("ConsoleClient", function() {
       }
       assert.isAtLeast(getGoat()!.rowIdx, 1);
       const out = renderGoatOverlay(s, 0, 24, 80);
-      assert.match(out, /,,_,,/, "overlay should include the sprite's horns");
-      assert.match(out, /\(o {3}o\)|\(O {3}O\)/,
+      // The sprite contains a characteristic comma-ears line ",__," and
+      // either a walking-legs line or a grazing chin-to-ground line.
+      assert.match(out, /,__,/, "overlay should include the sprite's ears");
+      assert.match(out, /\(--\)|\(\\_\/\)/,
         "overlay should include the sprite's face");
     });
 
