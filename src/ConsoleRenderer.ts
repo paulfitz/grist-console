@@ -6,7 +6,7 @@ import {
   CLEAR_LINE, MOVE_TO, HIDE_CURSOR, SHOW_CURSOR,
   ENTER_ALT_SCREEN, EXIT_ALT_SCREEN,
   displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
-  applyChoiceColor, editWindow,
+  applyChoiceColor, editWindow, extractUrls,
 } from "./ConsoleDisplay.js";
 
 // Re-export the ANSI screen controls for consumers (ConsoleMain)
@@ -34,8 +34,9 @@ interface ColLayout {
 
 /**
  * Compute column widths based on header labels and sampled data.
+ * Shared by the grid renderer and ConsoleInput's cursor-visibility logic.
  */
-function computeColLayout(pane: PaneState): ColLayout[] {
+export function computeColLayout(pane: PaneState): ColLayout[] {
   const maxWidth = 30;
   const minWidth = 4;
   return pane.columns.map((col) => {
@@ -157,7 +158,7 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
     lines.push(t.helpBar(`Type to edit  Enter:save  Esc:cancel${scrollInfo}`));
     lines.push("");
   } else {
-    const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+    const urls = extractUrls(state.cellViewerContent);
     const urlHint = urls.length > 0 ? "  o:link" : "";
     const enterHint = state.cellViewerLinkIndex >= 0 ? "Enter:open" : "Enter:edit";
     lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc/v:close${scrollInfo}`));
@@ -451,7 +452,7 @@ function renderMultiPane(state: AppState, termRows: number, termCols: number): s
     const pane = state.panes[paneIdx];
     const leaf = leaves.find(l => l.paneIndex === paneIdx);
     if (pane && leaf && !isCardPane(pane)) {
-      const paneLayout = computePaneColLayout(pane, leaf.width);
+      const paneLayout = computeColLayout(pane);
       const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
       const rowNumWidth = Math.max(3, String(maxRowId).length);
       const headerRows = t.headerSepLine ? 3 : 2;
@@ -521,7 +522,7 @@ function renderOverlay(
 
   // Show terminal cursor when editing in overlay
   if (state.mode === "editing" && !state.cellViewerContent && !isCardPane(pane)) {
-    const paneLayout = computePaneColLayout(pane, termCols);
+    const paneLayout = computeColLayout(pane);
     const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
     const rowNumWidth = Math.max(3, String(maxRowId).length);
     const headerRows = t.headerSepLine ? 3 : 2;
@@ -556,7 +557,7 @@ function renderPaneInto(
     return;
   }
 
-  const layout = computePaneColLayout(pane, width);
+  const layout = computeColLayout(pane);
   const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
@@ -711,24 +712,6 @@ function renderChartPlaceholder(
     const msg = "(chart not supported in console)";
     writeToBuffer(buf, top + 2, left, padRight("  " + msg, width), width);
   }
-}
-
-function computePaneColLayout(pane: PaneState, paneWidth: number): ColLayout[] {
-  const maxWidth = 30;
-  const minWidth = 4;
-  return pane.columns.map((col) => {
-    let width = displayWidth(col.label);
-    const values = pane.colValues[col.colId];
-    if (values) {
-      const sampleSize = Math.min(values.length, 100);
-      for (let i = 0; i < sampleSize; i++) {
-        const formatted = flattenToLine(formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues));
-        width = Math.max(width, displayWidth(formatted));
-      }
-    }
-    width = Math.max(minWidth, Math.min(maxWidth, width));
-    return { colId: col.colId, label: col.label, width };
-  });
 }
 
 /**

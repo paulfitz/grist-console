@@ -22,6 +22,14 @@ export const EXIT_ALT_SCREEN = `${ESC}?1049l`;
 export const ANSI_RESET = "\x1b[0m";
 
 /**
+ * Extract every http/https URL from a string. Used by the cell viewer to
+ * enumerate openable links.
+ */
+export function extractUrls(s: string): string[] {
+  return [...s.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+}
+
+/**
  * Return the display width of a string in terminal cells.
  * Uses string-width, with terminal-measured overrides for known-problematic characters.
  */

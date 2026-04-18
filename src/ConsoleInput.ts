@@ -1,33 +1,21 @@
 import { AppMode, AppState, isCardPane, PaneState, activeView } from "./ConsoleAppState.js";
-import { displayWidth } from "./ConsoleDisplay.js";
-import { BulkColValues, CellValue, ColumnInfo } from "./types.js";
+import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
+import { CellValue } from "./types.js";
 import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
 import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
+import { computeColLayout } from "./ConsoleRenderer.js";
 
 /**
  * Ensure scrollCol is adjusted so cursorCol is visible.
- * Computes actual column widths to determine visibility.
- * Works with PaneState or the single-pane fields on AppState.
+ * Uses the same column-width computation as the grid renderer.
  */
-export function ensureColVisible(pane: { scrollCol: number; cursorCol: number; columns: ColumnInfo[]; colValues: BulkColValues; rowIds: number[] }, availWidth: number): void {
+export function ensureColVisible(pane: PaneState, availWidth: number): void {
   if (pane.cursorCol < pane.scrollCol) {
     pane.scrollCol = pane.cursorCol;
     return;
   }
-  // Compute column widths (same logic as renderer's computePaneColLayout)
-  const colWidths = pane.columns.map(col => {
-    let w = displayWidth(col.label);
-    const values = pane.colValues[col.colId];
-    if (values) {
-      const sampleSize = Math.min(values.length, 100);
-      for (let i = 0; i < sampleSize; i++) {
-        const formatted = formatCellValue(values[i], col.type, col.widgetOptions, col.displayValues);
-        w = Math.max(w, displayWidth(formatted));
-      }
-    }
-    return Math.max(4, Math.min(30, w));
-  });
+  const colLayout = computeColLayout(pane);
   const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
   const rowNumWidth = Math.max(3, String(maxRowId).length);
   const sepLen = 3; // " | "
@@ -35,16 +23,16 @@ export function ensureColVisible(pane: { scrollCol: number; cursorCol: number; c
   // Check if cursorCol is visible from current scrollCol
   let used = rowNumWidth;
   for (let c = pane.scrollCol; c <= pane.cursorCol; c++) {
-    used += sepLen + (colWidths[c] || 4);
+    used += sepLen + (colLayout[c]?.width || 4);
   }
-  if (used <= availWidth) { return; } // visible, no scroll needed
+  if (used <= availWidth) { return; }
 
   // Scroll right until cursorCol fits
   while (pane.scrollCol < pane.cursorCol) {
     pane.scrollCol++;
     used = rowNumWidth;
     for (let c = pane.scrollCol; c <= pane.cursorCol; c++) {
-      used += sepLen + (colWidths[c] || 4);
+      used += sepLen + (colLayout[c]?.width || 4);
     }
     if (used <= availWidth) { return; }
   }
@@ -570,7 +558,7 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
     case "enter": {
       // If a link is selected, open it; otherwise switch to editing
       if (state.cellViewerLinkIndex >= 0) {
-        const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+        const urls = extractUrls(state.cellViewerContent);
         if (state.cellViewerLinkIndex < urls.length) {
           return { type: "open_url", url: urls[state.cellViewerLinkIndex] };
         }
@@ -585,7 +573,7 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
     }
     case "o": {
       // Cycle through URLs found in cell content
-      const urls = [...state.cellViewerContent.matchAll(/https?:\/\/[^\s)>\]]+/g)].map(m => m[0]);
+      const urls = extractUrls(state.cellViewerContent);
       if (urls.length === 0) { return { type: "none" }; }
       state.cellViewerLinkIndex = (state.cellViewerLinkIndex + 1) % urls.length;
       return { type: "render" };

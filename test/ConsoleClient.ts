@@ -1664,10 +1664,14 @@ describe("ConsoleClient", function() {
       return {
         scrollCol: 0,
         cursorCol: 0,
+        scrollRow: 0,
+        cursorRow: 0,
         columns,
         colValues,
         rowIds: [1],
-      };
+        allRowIds: [1],
+        allColValues: colValues,
+      } as PaneState;
     }
 
     it("does nothing when cursor is visible", function() {
