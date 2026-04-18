@@ -8,6 +8,25 @@
 
 import stringWidth from "string-width";
 
+// Unicode codepoints used by the emoji-width probing logic.
+export const ZWJ = 0x200D;            // Zero-width joiner (ZWJ sequences)
+export const VS16 = 0xFE0F;           // Variation selector 16 (emoji presentation)
+export const KEYCAP = 0x20E3;         // Combining enclosing keycap
+export const REGIONAL_FIRST = 0x1F1E6; // Regional Indicator A (start of flag pair range)
+export const REGIONAL_LAST = 0x1F1FF;  // Regional Indicator Z
+export const SKIN_TONE_FIRST = 0x1F3FB;
+export const SKIN_TONE_LAST = 0x1F3FF;
+
+/** True if the codepoint is a Regional Indicator (one half of a flag emoji). */
+export function isRegionalIndicator(code: number): boolean {
+  return code >= REGIONAL_FIRST && code <= REGIONAL_LAST;
+}
+
+/** True if the codepoint is a skin tone modifier (Fitzpatrick 1-2 through 5-6). */
+export function isSkinTone(code: number): boolean {
+  return code >= SKIN_TONE_FIRST && code <= SKIN_TONE_LAST;
+}
+
 // Map from character/grapheme cluster to measured terminal width
 const _overrides = new Map<string, number>();
 // If regional indicator pairs (flags) render wider than predicted, store the delta
@@ -44,7 +63,7 @@ export function getVs16Delta(): number {
 export function countZwjs(s: string): number {
   let count = 0;
   for (const ch of s) {
-    if (ch.codePointAt(0) === 0x200D) { count++; }
+    if (ch.codePointAt(0) === ZWJ) { count++; }
   }
   return count;
 }
@@ -66,8 +85,7 @@ export function countFlagPairs(s: string): number {
   let count = 0;
   let inPair = false;
   for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    const isRI = code >= 0x1F1E6 && code <= 0x1F1FF;
+    const isRI = isRegionalIndicator(ch.codePointAt(0)!);
     if (isRI && !inPair) {
       inPair = true;
     } else if (isRI && inPair) {
@@ -113,7 +131,7 @@ function recordMeasurement(ch: string, actual: number): boolean {
   }
   // If a char+VS16 sequence rendered differently than expected, remember
   // the per-VS16 delta to apply to any char+VS16 combination.
-  if (ch.length === 2 && ch.charCodeAt(1) === 0xFE0F) {
+  if (ch.length === 2 && ch.charCodeAt(1) === VS16) {
     _vs16Delta = diff;
   }
   return true;

@@ -12,7 +12,10 @@
 
 import { AppState } from "./ConsoleAppState.js";
 import { BulkColValues, ColumnInfo } from "./types.js";
-import { probeChar, hasProbed, getWidthReport, getMode2027Status } from "./termWidth.js";
+import {
+  probeChar, hasProbed, getWidthReport, getMode2027Status,
+  isRegionalIndicator, isSkinTone, ZWJ, VS16, KEYCAP,
+} from "./termWidth.js";
 
 // Coordination state shared by the main event loop and the probe.
 let _probing = false;
@@ -54,15 +57,14 @@ export function scheduleProbe(state: AppState, doRender: (s: AppState) => void):
  */
 function collectUnprobedChars(state: AppState): string[] {
   const seen = new Set<string>();
-  const isSkinTone = (code: number) => code >= 0x1F3FB && code <= 0x1F3FF;
   const extract = (s: string) => {
     const cps = [...s];
     for (let i = 0; i < cps.length; i++) {
       const code = cps[i].codePointAt(0)!;
       // Keycap sequences (1 + VS16 + U+20E3) even for ASCII base chars
       if (i + 2 < cps.length
-          && cps[i + 1].codePointAt(0) === 0xFE0F
-          && cps[i + 2].codePointAt(0) === 0x20E3) {
+          && cps[i + 1].codePointAt(0) === VS16
+          && cps[i + 2].codePointAt(0) === KEYCAP) {
         const unit = cps[i] + cps[i + 1] + cps[i + 2];
         if (!hasProbed(unit)) { seen.add(unit); }
         i += 2;
@@ -74,12 +76,12 @@ function collectUnprobedChars(state: AppState): string[] {
       let end = i + 1;
       while (end < cps.length) {
         const c = cps[end].codePointAt(0)!;
-        if (c === 0xFE0F || isSkinTone(c)) { end++; continue; }
-        if (c === 0x200D && end + 1 < cps.length) {
+        if (c === VS16 || isSkinTone(c)) { end++; continue; }
+        if (c === ZWJ && end + 1 < cps.length) {
           end += 2;
           while (end < cps.length) {
             const cc = cps[end].codePointAt(0)!;
-            if (cc === 0xFE0F || isSkinTone(cc)) { end++; continue; }
+            if (cc === VS16 || isSkinTone(cc)) { end++; continue; }
             break;
           }
           continue;
@@ -94,14 +96,12 @@ function collectUnprobedChars(state: AppState): string[] {
       }
 
       // Regional indicator pair (flag)
-      if (code >= 0x1F1E6 && code <= 0x1F1FF && i + 1 < cps.length) {
-        const nextCode = cps[i + 1].codePointAt(0)!;
-        if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
-          const pair = cps[i] + cps[i + 1];
-          if (!hasProbed(pair)) { seen.add(pair); }
-          i++;
-          continue;
-        }
+      if (isRegionalIndicator(code) && i + 1 < cps.length
+          && isRegionalIndicator(cps[i + 1].codePointAt(0)!)) {
+        const pair = cps[i] + cps[i + 1];
+        if (!hasProbed(pair)) { seen.add(pair); }
+        i++;
+        continue;
       }
       if (!hasProbed(cps[i])) { seen.add(cps[i]); }
     }

@@ -9,7 +9,10 @@
 
 import stringWidth from "string-width";
 import { CellValue, getBaseType } from "./types.js";
-import { getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides } from "./termWidth.js";
+import {
+  getTermWidthOverride, getFlagPairDelta, getVs16Delta, hasOverrides,
+  isRegionalIndicator, VS16,
+} from "./termWidth.js";
 
 // ANSI escape codes (non-stylistic, always needed)
 const ESC = "\x1b[";
@@ -68,21 +71,18 @@ export function displayWidth(s: string): number {
     if (matched) { continue; }
 
     // Regional-indicator pair (flag emoji) -- check BEFORE single-char overrides
-    const code = chars[i].codePointAt(0)!;
-    const isRI = code >= 0x1F1E6 && code <= 0x1F1FF;
-    if (isRI && i + 1 < chars.length) {
-      const nextCode = chars[i + 1].codePointAt(0)!;
-      if (nextCode >= 0x1F1E6 && nextCode <= 0x1F1FF) {
-        w += 2 + flagPairDelta;
-        i += 2;
-        continue;
-      }
+    if (isRegionalIndicator(chars[i].codePointAt(0)!)
+        && i + 1 < chars.length
+        && isRegionalIndicator(chars[i + 1].codePointAt(0)!)) {
+      w += 2 + flagPairDelta;
+      i += 2;
+      continue;
     }
 
     // Character followed by VS16: handle as emoji-composed BEFORE single-char
     // override, because the same base char can render differently with VS16
     // (e.g. ❤ alone = 1 cell text, ❤+VS16 = 2 cells emoji).
-    if (i + 1 < chars.length && chars[i + 1].codePointAt(0) === 0xFE0F) {
+    if (i + 1 < chars.length && chars[i + 1].codePointAt(0) === VS16) {
       w += stringWidth(chars[i] + chars[i + 1]) + vs16Delta;
       i += 2;
       continue;
