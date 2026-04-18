@@ -2528,6 +2528,32 @@ describe("ConsoleClient", function() {
       assert.equal(out, "", "goat sprite should skip card panes");
     });
 
+    it("goat stays within the visible scroll window on big tables", function() {
+      // 500-row pane with scrollRow near the middle. The goat must
+      // consistently land inside [scrollRow, scrollRow + ~20) -- on the
+      // pre-fix code it would randomly land anywhere and be clipped.
+      const s = createInitialState("t");
+      s.focusedPane = 0;
+      const rowIds = Array.from({ length: 500 }, (_, i) => i + 1);
+      const names = rowIds.map(i => `Name${i}`);
+      s.panes = [makePane({
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds,
+        colValues: { Name: names },
+      })];
+      s.panes[0].scrollRow = 200;
+      for (let i = 0; i < 30; i++) {
+        stepGoat(s);
+        const g = getGoat()!;
+        assert.isAtLeast(g.rowIdx, 200,
+          `step ${i}: goat at row ${g.rowIdx} is above scroll`);
+        // Upper bound: scrollRow + visibleRows (depends on process.stdout.rows;
+        // in tests this may be undefined -> 24; 24 - 6 - 3 = 15 visible rows).
+        assert.isBelow(g.rowIdx, 200 + 30,
+          `step ${i}: goat at row ${g.rowIdx} is below visible window`);
+      }
+    });
+
     it("renderGoatOverlay is empty when goat is scrolled out of view", function() {
       const s = goatState();
       s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };

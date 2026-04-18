@@ -84,8 +84,20 @@ export function stepGoat(state: AppState): boolean {
     _goat = null;
     return false;
   }
-  const maxR = pane.rowIds.length;
-  const maxC = pane.columns.length;
+
+  // Keep the goat in the window the user can actually see. Without this,
+  // on a 500-row table most placements land below the scroll and the
+  // overlay silently clips them -- the user never sees the goat.
+  // Slightly pessimistic guess for visible height: terminal rows minus
+  // header/footer/chrome. Also leave a bottom margin so the 4-row
+  // sprite doesn't get clipped against the footer.
+  const termRows = process.stdout.rows || 24;
+  const visibleRows = Math.max(1, termRows - 6 - (SPRITE_ROWS - 1));
+  const rowLow = pane.scrollRow;
+  const rowHigh = Math.min(pane.rowIds.length, pane.scrollRow + visibleRows);
+  const colLow = pane.scrollCol;
+  // Assume the user can scan ~10 columns at a time; narrower if pane is small.
+  const colHigh = Math.min(pane.columns.length, pane.scrollCol + 10);
 
   const cursorR = pane.cursorRow;
   const cursorC = pane.cursorCol;
@@ -102,21 +114,31 @@ export function stepGoat(state: AppState): boolean {
     cursorR >= r && cursorR < r + SPRITE_ROWS && c === cursorC;
 
   const pickTeleport = (): GoatPos => {
+    const rowRange = Math.max(1, rowHigh - rowLow);
+    const colRange = Math.max(1, colHigh - colLow);
     let r: number, c: number;
     let tries = 0;
     do {
-      r = Math.floor(Math.random() * maxR);
-      c = Math.floor(Math.random() * maxC);
+      r = rowLow + Math.floor(Math.random() * rowRange);
+      c = colLow + Math.floor(Math.random() * colRange);
       tries++;
     } while (overlapsCursor(r, c) && tries < 20);
     return { paneIdx, rowIdx: r, colIdx: c };
   };
 
+  // Is the existing goat still inside the visible window? If the user
+  // scrolled, the old position may now be off-screen -- teleport to a
+  // fresh spot in the visible range rather than wandering from it.
+  const goatVisible = _goat && _goat.paneIdx === paneIdx
+    && _goat.rowIdx >= rowLow && _goat.rowIdx < rowHigh
+    && _goat.colIdx >= colLow && _goat.colIdx < colHigh;
+
   let next: GoatPos;
-  if (!_goat || _goat.paneIdx !== paneIdx) {
+  if (!goatVisible) {
     next = pickTeleport();
   } else {
-    // Try to wander to a random adjacent cell (4-neighbourhood), avoiding cursor.
+    // Try to wander to a random adjacent cell (4-neighbourhood), avoiding
+    // cursor and staying within the visible window.
     const dirs: Array<[number, number]> = [[-1, 0], [1, 0], [0, -1], [0, 1]];
     for (let i = dirs.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -124,9 +146,9 @@ export function stepGoat(state: AppState): boolean {
     }
     next = pickTeleport(); // default if no neighbour works
     for (const [dr, dc] of dirs) {
-      const nr = _goat.rowIdx + dr;
-      const nc = _goat.colIdx + dc;
-      if (nr < 0 || nr >= maxR || nc < 0 || nc >= maxC) { continue; }
+      const nr = _goat!.rowIdx + dr;
+      const nc = _goat!.colIdx + dc;
+      if (nr < rowLow || nr >= rowHigh || nc < colLow || nc >= colHigh) { continue; }
       if (overlapsCursor(nr, nc)) { continue; }
       next = { paneIdx, rowIdx: nr, colIdx: nc };
       break;
