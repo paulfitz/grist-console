@@ -22,6 +22,7 @@ import {
   applyChoiceColor, editWindow,
 } from "./ConsoleDisplay.js";
 import { computeColLayout, getStatusLine, isNumericType } from "./ConsoleRenderer.js";
+import { goatSpriteFor } from "./GoatAnimation.js";
 
 export function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
@@ -54,7 +55,7 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
     const pane = state.panes[leaf.paneIndex];
     if (!pane) { continue; }
     const isFocused = leaf.paneIndex === state.focusedPane;
-    renderPaneInto(buf, leaf, pane, isFocused, state.mode, state.editValue, state.editCursorPos, t);
+    renderPaneInto(buf, leaf, pane, leaf.paneIndex, isFocused, state.mode, state.editValue, state.editCursorPos, t);
   }
 
   // Flatten buffer to string with ANSI positioning
@@ -131,7 +132,7 @@ function renderOverlay(
     top: 0, left: 0, width: termCols, height: bufHeight,
     paneIndex: state.overlayPaneIndex!,
   };
-  renderPaneInto(buf, overlayLeaf, pane, true, state.mode, state.editValue, state.editCursorPos, t);
+  renderPaneInto(buf, overlayLeaf, pane, state.overlayPaneIndex!, true, state.mode, state.editValue, state.editCursorPos, t);
 
   let output = HIDE_CURSOR + (t.screenBg || "") + MOVE_TO(0, 0);
   if (trayHeight > 0) {
@@ -186,7 +187,7 @@ function positionEditCursor(
 }
 
 function renderPaneInto(
-  buf: string[][], leaf: LayoutNode, pane: PaneState,
+  buf: string[][], leaf: LayoutNode, pane: PaneState, paneIdx: number,
   isFocused: boolean, mode: AppMode, editValue: string, editCursorPos: number, t: Theme,
 ): void {
   const { top, left, width, height } = leaf;
@@ -258,7 +259,14 @@ function renderPaneInto(
       const padFn = isNumericType(colType) ? padLeft : padRight;
       const isCurrentCell = isFocused && rowIdx === pane.cursorRow && ci === pane.cursorCol;
 
-      if (mode === "editing" && isCurrentCell) {
+      // Goat overlay: the theme's wandering goat paints sprites on top
+      // of cells it's currently visiting (or has recently grazed).
+      // Never covers the user's cursor cell.
+      const sprite = !isCurrentCell ? goatSpriteFor(paneIdx, rowIdx, ci) : null;
+      if (sprite) {
+        const sw = displayWidth(sprite);
+        line += t.colSeparator + sprite + " ".repeat(Math.max(0, col.width - sw));
+      } else if (mode === "editing" && isCurrentCell) {
         const { text: editDisplay } = editWindow(editValue, editCursorPos, col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {

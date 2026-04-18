@@ -35,6 +35,12 @@ const BLACK_BG = `${ESC}40m`;
 const C64_LIGHT_BLUE = `${ESC}38;5;111m`;  // approx C64 "light blue" #8EAFDF
 const C64_WHITE = `${ESC}38;5;255m`;
 const C64_NAVY_BG = `${ESC}48;5;19m`;      // approx C64 "blue" #4242B4
+// Goat palette: cream paper + pastel meadow, earthy browns for text
+const GOAT_CREAM_BG = `${ESC}48;5;230m`;   // warm cream
+const GOAT_PASTURE_BG = `${ESC}48;5;194m`; // soft spring green
+const GOAT_BROWN_FG = `${ESC}38;5;94m`;    // walnut brown
+const GOAT_DARK_FG = `${ESC}38;5;52m`;     // deep maroon-brown
+const GOAT_MEADOW_FG = `${ESC}38;5;28m`;   // deep grass green
 
 /**
  * A theme controls all visual styling: ANSI formatting, box-drawing characters,
@@ -402,6 +408,35 @@ export const paperTheme: Theme = {
   pickerTitleFormat: (label) => ` ${label} `,
 };
 
+/**
+ * Goat theme: cream paper with a soft meadow pasture tint. Brown-ink
+ * headers, deep-green labels. Paired with the goat animation, which
+ * wanders the focused pane munching cells (see GoatAnimation.ts).
+ */
+export const goatTheme: Theme = {
+  titleBar: (text) => GOAT_DARK_FG + BOLD + GOAT_PASTURE_BG + text + RESET,
+  titleBarDim: (text) => GOAT_BROWN_FG + GOAT_PASTURE_BG + text + RESET,
+  columnHeader: (text) => GOAT_DARK_FG + BOLD + GOAT_CREAM_BG + text + RESET,
+  rowNumber: (text) => GOAT_MEADOW_FG + GOAT_CREAM_BG + text + RESET,
+  cursor: (text) => GOAT_CREAM_BG + REVERSE + text + RESET,
+  fieldLabel: (text) => GOAT_BROWN_FG + GOAT_CREAM_BG + text + RESET,
+  fieldLabelActive: (text) => GOAT_DARK_FG + BOLD + GOAT_CREAM_BG + text + RESET,
+  helpBar: (text) => GOAT_DARK_FG + GOAT_PASTURE_BG + text + RESET,
+  pickerSelected: (text) => GOAT_CREAM_BG + REVERSE + text + RESET,
+
+  colSeparator: " \u2502 ",
+  headerSeparator: " \u2502 ",
+  rowSepChar: "\u2500",
+  crossChar: "\u253c",
+  borderHoriz: "\u2500",
+  borderVert: "\u2502",
+  headerSepLine: true,
+  screenBg: GOAT_CREAM_BG + GOAT_BROWN_FG,
+
+  titleFormat: (label, detail) => ` \u{1F410} ${label}${detail ? " " + detail : ""} `,
+  pickerTitleFormat: (label) => ` \u{1F410} ${label} `,
+};
+
 const themes: Record<string, Theme> = {
   default: defaultTheme,
   visicalc: visicalcTheme,
@@ -412,8 +447,14 @@ const themes: Record<string, Theme> = {
   amber: amberTheme,
   paper: paperTheme,
   rainbow: rainbowTheme,
+  goat: goatTheme,
   boring: boringTheme,
 };
+
+/** True if the theme is the goat theme (enables the wandering animation). */
+export function isGoatTheme(t: Theme): boolean {
+  return t === goatTheme;
+}
 
 export function getTheme(name: string): Theme {
   const theme = themes[name];

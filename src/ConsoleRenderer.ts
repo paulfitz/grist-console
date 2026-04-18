@@ -7,6 +7,8 @@ import {
 } from "./ConsoleDisplay.js";
 import { AppState, PaneState, activeView } from "./ConsoleAppState.js";
 import { renderMultiPane } from "./ConsoleMultiPane.js";
+import { goatSpriteFor, goatStatus } from "./GoatAnimation.js";
+import { isGoatTheme } from "./ConsoleTheme.js";
 
 /**
  * Build the screen preamble: hide cursor, set background color, move to home.
@@ -58,6 +60,11 @@ export function getStatusLine(state: AppState, termCols: number): string {
     return truncate("⚠ Schema changed - press r to refresh", termCols);
   }
   if (state.statusMessage) { return state.statusMessage; }
+  // Goat theme keeps a running commentary in the status line when idle.
+  if (isGoatTheme(state.theme)) {
+    const chatter = goatStatus(state);
+    if (chatter) { return truncate(chatter, termCols); }
+  }
   if (state.mode === "editing") { return ""; }
 
   const pane = activeView(state);
@@ -300,7 +307,14 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       const padFn = isNumericType(colType) ? padLeft : padRight;
       const isCurrentCell = (rowIdx === pane.cursorRow && ci === pane.cursorCol);
 
-      if (state.mode === "editing" && isCurrentCell) {
+      // Goat overlay: paints a sprite on cells the wandering goat is
+      // currently on or has recently grazed. Skips the cursor cell so
+      // the user's work is never obscured.
+      const sprite = !isCurrentCell ? goatSpriteFor(state.focusedPane, rowIdx, ci) : null;
+      if (sprite) {
+        const sw = displayWidth(sprite);
+        line += t.colSeparator + sprite + " ".repeat(Math.max(0, col.width - sw));
+      } else if (state.mode === "editing" && isCurrentCell) {
         const { text: editDisplay } = editWindow(state.editValue, state.editCursorPos, col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {

@@ -11,7 +11,8 @@ import {
   parseLayoutSpec, computeLayout, getColumnInfo, collectLeaves, Rect,
 } from "./ConsoleLayout.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
-import { Theme, defaultTheme, cycleTheme } from "./ConsoleTheme.js";
+import { Theme, defaultTheme, cycleTheme, isGoatTheme } from "./ConsoleTheme.js";
+import { stepGoat, resetGoat } from "./GoatAnimation.js";
 import { exec } from "child_process";
 import { calibrateTermWidth, disableMode2027 } from "./termWidth.js";
 import { handleOwnActionGroup, executeUndo, executeRedo } from "./UndoStack.js";
@@ -126,6 +127,28 @@ export async function consoleMain(options: {
   doRender(state);
   scheduleProbe(state, doRender);
 
+  // Goat animation timer: when the goat theme is active and we're in a
+  // grid-ish mode, advance the wandering goat every 1.5s. Starts/stops
+  // as the user cycles themes; cleaned up on exit.
+  let goatTimer: ReturnType<typeof setInterval> | null = null;
+  const syncGoatTimer = () => {
+    const shouldRun = isGoatTheme(state.theme)
+      && (state.mode === "grid" || state.mode === "editing");
+    if (shouldRun && !goatTimer) {
+      goatTimer = setInterval(() => {
+        stepGoat(state);
+        doRender(state);
+      }, 1500);
+      goatTimer.unref?.();
+    } else if (!shouldRun && goatTimer) {
+      clearInterval(goatTimer);
+      goatTimer = null;
+      resetGoat();
+      doRender(state);
+    }
+  };
+  syncGoatTimer();
+
   // Return a promise that resolves only when the user quits.
   return new Promise<void>((resolve) => {
     // Set up raw mode input
@@ -140,7 +163,13 @@ export async function consoleMain(options: {
       doRender(state);
     });
 
+    const cleanupGoat = () => {
+      if (goatTimer) { clearInterval(goatTimer); goatTimer = null; }
+      resetGoat();
+    };
+
     process.stdin.on("end", () => {
+      cleanupGoat();
       doCleanup(state, conn, resolve);
     });
 
@@ -157,6 +186,7 @@ export async function consoleMain(options: {
       const action = handleKeypress(Buffer.from(data), state);
       switch (action.type) {
         case "quit":
+          cleanupGoat();
           doCleanup(state, conn, resolve);
           return;
         case "render": {
@@ -268,6 +298,7 @@ export async function consoleMain(options: {
           state.theme = next.theme;
           state.statusMessage = `Theme: ${next.name}`;
           doRender(state);
+          syncGoatTimer();
           break;
         }
         case "undo":
@@ -281,8 +312,10 @@ export async function consoleMain(options: {
         case "none":
           break;
       }
-      // After every user action, consider scheduling a probe
+      // After every user action, consider scheduling a probe + (re)sync
+      // the goat timer (starts when theme+mode permit, stops otherwise).
       scheduleProbe(state, doRender);
+      syncGoatTimer();
     };
 
     process.stdin.on("data", dataHandler);

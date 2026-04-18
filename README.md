@@ -109,6 +109,7 @@ Press `T` to cycle through themes, or use `--theme <name>`:
 | `amber` | Amber phosphor VT220/VAX terminal |
 | `paper` | Dark text on white background, like a printed spreadsheet |
 | `rainbow` | Every element a different color. Festive. |
+| `goat` | Cream pasture with a 🐐 that wanders cells, munching. Avoids your cursor. Leaves a trail of 🌻🌼🌱. Status line narrates ("🐐 nibbling on People.Name[Alice]"). |
 | `boring` | No styling at all. Underline cursor. |
 
 ## What doesn't work

@@ -12,6 +12,7 @@ import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZw
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { getVisualPaneOrder, clearViewState } from "../src/ConsoleMain.js";
 import { getThemeNames, getTheme } from "../src/ConsoleTheme.js";
+import { stepGoat, resetGoat, getGoat, goatSpriteFor } from "../src/GoatAnimation.js";
 import {
   applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter,
   applyAllSectionLinks,
@@ -2463,6 +2464,91 @@ describe("ConsoleClient", function() {
         assert.include(pickText, "Tasks");
       });
     }
+  });
+
+  describe("GoatAnimation", function() {
+    beforeEach(() => resetGoat());
+
+    function goatState() {
+      const s = createInitialState("t");
+      s.focusedPane = 0;
+      s.panes = [makePane({
+        columns: [
+          { colId: "A", type: "Text", label: "A" },
+          { colId: "B", type: "Text", label: "B" },
+          { colId: "C", type: "Text", label: "C" },
+        ],
+        rowIds: [1, 2, 3, 4, 5],
+        colValues: {
+          A: ["a1", "a2", "a3", "a4", "a5"],
+          B: ["b1", "b2", "b3", "b4", "b5"],
+          C: ["c1", "c2", "c3", "c4", "c5"],
+        },
+      })];
+      return s;
+    }
+
+    it("places a goat in the focused pane and avoids the cursor cell", function() {
+      const s = goatState();
+      s.panes[0].cursorRow = 2;
+      s.panes[0].cursorCol = 1;
+      // 30 steps: goat should never land on (cursorRow, cursorCol).
+      for (let i = 0; i < 30; i++) {
+        stepGoat(s);
+        const g = getGoat()!;
+        assert.isOk(g, "goat should exist");
+        assert.notEqual(
+          `${g.rowIdx},${g.colIdx}`,
+          `${s.panes[0].cursorRow},${s.panes[0].cursorCol}`,
+          `goat landed on cursor at step ${i}`
+        );
+        assert.isAtLeast(g.rowIdx, 0);
+        assert.isBelow(g.rowIdx, 5);
+        assert.isAtLeast(g.colIdx, 0);
+        assert.isBelow(g.colIdx, 3);
+      }
+    });
+
+    it("goatSpriteFor returns a sprite at the goat's current cell", function() {
+      const s = goatState();
+      stepGoat(s);
+      const g = getGoat()!;
+      const sprite = goatSpriteFor(g.paneIdx, g.rowIdx, g.colIdx);
+      assert.isOk(sprite, "goat cell should have a sprite");
+      // Wrong cell -> no sprite (unless it happens to be a trail cell).
+      const far = goatSpriteFor(g.paneIdx, (g.rowIdx + 3) % 5, (g.colIdx + 2) % 3);
+      assert.isNotOk(far);
+    });
+
+    it("records a trail after multiple steps", function() {
+      const s = goatState();
+      stepGoat(s);
+      const first = { ...getGoat()! };
+      stepGoat(s);
+      const second = getGoat()!;
+      // The previous position is now a trail cell; sprite present there too.
+      const trailSprite = goatSpriteFor(first.paneIdx, first.rowIdx, first.colIdx);
+      // Could be null if the goat happened to step right back -- but the
+      // goat intentionally wanders to neighbours, so "stepped back to where
+      // it was" is unlikely. Allow either: sprite is the goat's current
+      // position, or it's a trail mark.
+      if (second.rowIdx === first.rowIdx && second.colIdx === first.colIdx) {
+        assert.isOk(trailSprite, "goat stayed put -- cell still has sprite");
+      } else {
+        assert.isOk(trailSprite, "previous position should be a trail cell");
+      }
+    });
+
+    it("resets when the focused pane has no rows / no cols", function() {
+      const s = goatState();
+      stepGoat(s);
+      assert.isOk(getGoat());
+
+      // Simulate switching to an empty pane
+      s.panes[0] = makePane({ columns: [], rowIds: [], colValues: {} });
+      stepGoat(s);
+      assert.isNull(getGoat(), "goat should disappear on an empty pane");
+    });
   });
 
   describe("clearViewState", function() {
