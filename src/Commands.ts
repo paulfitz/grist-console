@@ -11,7 +11,7 @@
 import { CellValue } from "./types.js";
 import { AppState, activeView, editReturnMode, paneTableId } from "./ConsoleAppState.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
-import { parseCellInput } from "./ConsoleCellFormat.js";
+import { parseCellInput, ParseError } from "./ConsoleCellFormat.js";
 
 /**
  * Persist the current edit buffer for the focused cell, then leave edit mode.
@@ -24,7 +24,17 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
   const col = pane.columns[pane.cursorCol];
   const rowId = pane.rowIds[pane.cursorRow];
 
-  const parsed = parseCellInput(state.editValue, col.type);
+  let parsed;
+  try {
+    parsed = parseCellInput(state.editValue, col.type);
+  } catch (e: any) {
+    if (e instanceof ParseError) {
+      // Reject invalid input -- stay in edit mode so the user can fix it.
+      state.statusMessage = e.message;
+      return;
+    }
+    throw e;
+  }
   try {
     await conn.applyUserActions([
       ["UpdateRecord", tableId, rowId, { [col.colId]: parsed }],

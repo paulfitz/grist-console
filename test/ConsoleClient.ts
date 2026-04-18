@@ -1,4 +1,4 @@
-import { formatCellValue, parseCellInput } from "../src/ConsoleCellFormat.js";
+import { formatCellValue, parseCellInput, ParseError } from "../src/ConsoleCellFormat.js";
 import {
   extractPages, extractSectionsForView, extractFieldsForSection,
   extractFiltersForSection, extractCollapsedSectionIds,
@@ -186,7 +186,6 @@ describe("ConsoleClient", function() {
         assert.equal(parseCellInput("42", "Int"), 42);
         assert.equal(parseCellInput("-5", "Int"), -5);
         assert.equal(parseCellInput("", "Int"), 0);
-        assert.equal(parseCellInput("abc", "Int"), "abc");
       });
 
       it("parses Numeric values", function() {
@@ -204,8 +203,15 @@ describe("ConsoleClient", function() {
         assert.equal(parseCellInput("", "Ref:People"), 0);
       });
 
-      it("returns string for unparseable input", function() {
-        assert.equal(parseCellInput("not-a-date", "Date"), "not-a-date");
+      it("throws ParseError for unparseable input", function() {
+        // Unrecognized Bool wording -- previously fell through and sent
+        // the raw string to the server.
+        assert.throws(() => parseCellInput("maybe", "Bool"), ParseError);
+        assert.throws(() => parseCellInput("abc", "Int"), ParseError);
+        assert.throws(() => parseCellInput("hello", "Numeric"), ParseError);
+        assert.throws(() => parseCellInput("not-a-date", "Date"), ParseError);
+        assert.throws(() => parseCellInput("garbage", "DateTime"), ParseError);
+        assert.throws(() => parseCellInput("xyz", "Ref:People"), ParseError);
       });
     });
   });

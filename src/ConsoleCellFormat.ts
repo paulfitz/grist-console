@@ -240,7 +240,20 @@ export function formatCellValue(value: CellValue, colType?: string, widgetOpts?:
 }
 
 /**
+ * Thrown by parseCellInput when input doesn't match the column type's
+ * accepted form. Callers catch this and surface a status message rather
+ * than forwarding garbage to the server.
+ */
+export class ParseError extends Error {
+  constructor(public readonly colType: string, public readonly input: string) {
+    super(`Invalid ${colType} value: ${JSON.stringify(input)}`);
+    this.name = "ParseError";
+  }
+}
+
+/**
  * Parse a user-entered string back to a CellValue, based on column type.
+ * Throws ParseError when the input can't be coerced to the column type.
  */
 export function parseCellInput(input: string, colType: string): CellValue {
   const baseType = getBaseType(colType);
@@ -249,36 +262,39 @@ export function parseCellInput(input: string, colType: string): CellValue {
       const lower = input.toLowerCase().trim();
       if (lower === "true" || lower === "1" || lower === "yes") { return true; }
       if (lower === "false" || lower === "0" || lower === "no" || lower === "") { return false; }
-      return input;
+      throw new ParseError(colType, input);
     }
     case "Int": {
       if (input.trim() === "") { return 0; }
       const n = parseInt(input, 10);
-      return isNaN(n) ? input : n;
+      if (isNaN(n)) { throw new ParseError(colType, input); }
+      return n;
     }
     case "Numeric":
     case "ManualSortPos":
     case "PositionNumber": {
       if (input.trim() === "") { return 0; }
       const n = parseFloat(input);
-      return isNaN(n) ? input : n;
+      if (isNaN(n)) { throw new ParseError(colType, input); }
+      return n;
     }
     case "Date": {
       if (input.trim() === "") { return null; }
       const d = new Date(input + "T00:00:00Z");
-      if (isNaN(d.getTime())) { return input; }
+      if (isNaN(d.getTime())) { throw new ParseError(colType, input); }
       return d.getTime() / 1000;
     }
     case "DateTime": {
       if (input.trim() === "") { return null; }
       const d = new Date(input);
-      if (isNaN(d.getTime())) { return input; }
+      if (isNaN(d.getTime())) { throw new ParseError(colType, input); }
       return d.getTime() / 1000;
     }
     case "Ref": {
       if (input.trim() === "") { return 0; }
       const n = parseInt(input, 10);
-      return isNaN(n) ? input : n;
+      if (isNaN(n)) { throw new ParseError(colType, input); }
+      return n;
     }
     case "Text":
     case "Choice":
