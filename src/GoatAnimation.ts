@@ -8,9 +8,10 @@
  * the goat every ~1500ms.
  */
 
-import { AppState } from "./ConsoleAppState.js";
+import { AppState, PaneState } from "./ConsoleAppState.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
-import { flattenToLine } from "./ConsoleDisplay.js";
+import { flattenToLine, MOVE_TO } from "./ConsoleDisplay.js";
+import { collectLeaves } from "./ConsoleLayout.js";
 
 interface GoatPos {
   paneIdx: number;
@@ -25,11 +26,42 @@ interface GoatState extends GoatPos {
   frame: number;
   /** What the goat is currently eating, as a short display string. */
   snack: string;
+  /** Running tally of cells the goat has visited. */
+  munchCount: number;
 }
 
 const MAX_TRAIL = 3;
-const SPRITE_FRAMES = ["\u{1F410}", "\u{1F33F}\u{1F410}"]; // 🐐 and 🌿🐐
-const TRAIL_CHARS = ["\u{1F33B}", "\u{1F33C}", "\u{1F331}"]; // 🌻 🌼 🌱 -- newest to oldest
+
+// Multi-line ASCII goat sprite. Two frames so the mouth chews. Written
+// onto the screen at the goat's computed screen position after the normal
+// render finishes, so the art spans cell boundaries cleanly.
+const SPRITE_FRAMES: string[][] = [
+  // Frame 0 -- eyes open, mouth closed
+  [
+    " ,,_,, ",
+    "(o   o)",
+    " \\_V_/ ",
+    "  \"U\"  ",
+  ],
+  // Frame 1 -- chewing (mouth open)
+  [
+    " ,,_,, ",
+    "(O   O)",
+    " \\___/ ",
+    "  \"U\"  ",
+  ],
+];
+const SPRITE_ROWS = SPRITE_FRAMES[0].length;
+const SPRITE_COLS = SPRITE_FRAMES[0][0].length;
+
+// Trail: a small flower at cells the goat was recently on.
+const TRAIL_CHARS = [",*,", ".o.", " . "];
+
+// The goat is a ruminant of many moods. Cycles per step, never two in a row.
+const MUNCH_VERBS = [
+  "nibbling", "munching", "grazing on", "chomping", "rummaging through",
+  "ruminating on", "tasting", "chewing", "sampling", "snacking on",
+];
 
 let _goat: GoatState | null = null;
 
@@ -63,6 +95,12 @@ export function stepGoat(state: AppState): boolean {
        ..._goat.trail].slice(0, MAX_TRAIL)
     : [];
 
+  // The sprite is SPRITE_ROWS tall, so it extends down from the anchor
+  // cell. Reject positions whose row band would cover the cursor row,
+  // so the goat never obscures what the user is working on.
+  const overlapsCursor = (r: number, c: number) =>
+    cursorR >= r && cursorR < r + SPRITE_ROWS && c === cursorC;
+
   const pickTeleport = (): GoatPos => {
     let r: number, c: number;
     let tries = 0;
@@ -70,7 +108,7 @@ export function stepGoat(state: AppState): boolean {
       r = Math.floor(Math.random() * maxR);
       c = Math.floor(Math.random() * maxC);
       tries++;
-    } while (r === cursorR && c === cursorC && tries < 20);
+    } while (overlapsCursor(r, c) && tries < 20);
     return { paneIdx, rowIdx: r, colIdx: c };
   };
 
@@ -89,7 +127,7 @@ export function stepGoat(state: AppState): boolean {
       const nr = _goat.rowIdx + dr;
       const nc = _goat.colIdx + dc;
       if (nr < 0 || nr >= maxR || nc < 0 || nc >= maxC) { continue; }
-      if (nr === cursorR && nc === cursorC) { continue; }
+      if (overlapsCursor(nr, nc)) { continue; }
       next = { paneIdx, rowIdx: nr, colIdx: nc };
       break;
     }
@@ -106,27 +144,126 @@ export function stepGoat(state: AppState): boolean {
     trail: carryTrail,
     frame: (_goat?.frame ?? 0) + 1,
     snack,
+    munchCount: (_goat?.munchCount ?? 0) + 1,
   };
   return true;
 }
 
 /**
- * Return the sprite (or null) to display at (paneIdx, rowIdx, colIdx).
- * Goats at the goat's current cell; a fading flower for trail cells.
+ * Compute the screen-space output that overlays the goat sprite on top of
+ * the already-rendered frame, at the goat's current cell. Also overlays
+ * small trail markers at the goat's recently-visited cells. Caller
+ * appends the result to the render output; the sprite is positioned via
+ * MOVE_TO so it doesn't care about underlying cell widths.
+ *
+ * Returns "" if there's no goat, no layout, or the goat's pane is the
+ * overlay pane (overlay uses the full screen and has its own code path).
  */
-export function goatSpriteFor(paneIdx: number, rowIdx: number, colIdx: number): string | null {
-  if (!_goat) { return null; }
-  if (_goat.paneIdx === paneIdx && _goat.rowIdx === rowIdx && _goat.colIdx === colIdx) {
-    return SPRITE_FRAMES[_goat.frame % SPRITE_FRAMES.length];
+export function renderGoatOverlay(
+  state: AppState,
+  trayHeight: number,
+  termRows: number,
+  termCols: number,
+): string {
+  if (!_goat) { return ""; }
+  const pane = state.panes[_goat.paneIdx];
+  if (!pane) { return ""; }
+
+  // Resolve the pane's screen rectangle (leaf) and the column layout.
+  let leafTop = trayHeight;
+  let leafLeft = 0;
+  let leafWidth = termCols;
+  let leafHeight = termRows - 2 - trayHeight;
+  if (state.layout) {
+    const leaf = collectLeaves(state.layout).find(l => l.paneIndex === _goat!.paneIdx);
+    if (!leaf) { return ""; }
+    leafTop = leaf.top + trayHeight;
+    leafLeft = leaf.left;
+    leafWidth = leaf.width;
+    leafHeight = leaf.height;
   }
-  const trailAge = _goat.trail.findIndex(t =>
-    t.paneIdx === paneIdx && t.rowIdx === rowIdx && t.colIdx === colIdx
-  );
-  if (trailAge >= 0) { return TRAIL_CHARS[Math.min(trailAge, TRAIL_CHARS.length - 1)]; }
-  return null;
+
+  // The column layout drives horizontal positioning. Each cell consists
+  // of colSeparator + column-width characters.
+  const t = state.theme;
+  const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
+  const rowNumWidth = Math.max(3, String(maxRowId).length);
+  const headerRows = t.headerSepLine ? 3 : 2;
+  const colWidths = paneColWidths(pane);
+
+  // Screen column for a given pane column index (top-left of that cell).
+  const cellScreenCol = (colIdx: number): number => {
+    let x = leafLeft + rowNumWidth;
+    for (let c = pane.scrollCol; c < colIdx; c++) {
+      x += t.colSeparator.length + colWidths[c];
+    }
+    return x + t.colSeparator.length;
+  };
+
+  const cellScreenRow = (rowIdx: number): number =>
+    leafTop + headerRows + (rowIdx - pane.scrollRow);
+
+  let out = "";
+
+  // Trail markers -- tiny 3-char flowers, replacing the underlying cell
+  // character briefly.
+  for (let i = 0; i < _goat.trail.length; i++) {
+    const t = _goat.trail[i];
+    if (t.paneIdx !== _goat.paneIdx) { continue; }
+    if (t.rowIdx < pane.scrollRow) { continue; }
+    const sr = cellScreenRow(t.rowIdx);
+    const sc = cellScreenCol(t.colIdx);
+    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
+    if (sc < leafLeft + rowNumWidth || sc >= leafLeft + leafWidth) { continue; }
+    out += MOVE_TO(sr, sc) + TRAIL_CHARS[Math.min(i, TRAIL_CHARS.length - 1)];
+  }
+
+  // Goat sprite -- written line by line at the goat's anchor cell, shifted
+  // one line up so the face sits roughly on the goat's row rather than
+  // starting below it.
+  if (_goat.rowIdx < pane.scrollRow) { return out; }
+  const frame = SPRITE_FRAMES[_goat.frame % SPRITE_FRAMES.length];
+  const anchorRow = cellScreenRow(_goat.rowIdx) - 1;
+  const anchorCol = cellScreenCol(_goat.colIdx);
+  for (let r = 0; r < frame.length; r++) {
+    const sr = anchorRow + r;
+    if (sr < leafTop + headerRows || sr >= leafTop + leafHeight) { continue; }
+    const line = frame[r];
+    // Clip to pane right edge
+    const maxChars = Math.max(0, leafLeft + leafWidth - anchorCol);
+    const clipped = line.slice(0, maxChars);
+    if (clipped.length === 0) { continue; }
+    out += MOVE_TO(sr, anchorCol) + clipped;
+  }
+  return out;
 }
 
-/** One-line status like "🐐 nibbling on People[Alice]" for the footer. */
+/**
+ * Column widths the same way the renderer computes them. Mirrors
+ * ConsoleRenderer.computeColLayout; duplicated to avoid a circular
+ * import (ConsoleRenderer imports from this module).
+ */
+function paneColWidths(pane: PaneState): number[] {
+  return pane.columns.map(col => {
+    let w = col.label.length;
+    const values = pane.colValues[col.colId];
+    if (values) {
+      const sample = Math.min(values.length, 100);
+      for (let i = 0; i < sample; i++) {
+        const v = values[i];
+        const s = v == null ? "" : String(v);
+        if (s.length > w) { w = s.length; }
+      }
+    }
+    return Math.max(4, Math.min(30, w));
+  });
+}
+
+/**
+ * One-line status like "🐐 munching People.Name[Alice] · 47 nibbles"
+ * for the footer. Verb cycles deterministically with the frame counter so
+ * the line reads fresh without flickering on every render.
+ */
 export function goatStatus(state: AppState): string | null {
   if (!_goat) { return null; }
   const pane = state.panes[_goat.paneIdx];
@@ -134,5 +271,6 @@ export function goatStatus(state: AppState): string | null {
   const col = pane.columns[_goat.colIdx];
   const tableId = pane.sectionInfo?.tableId || state.currentTableId || "";
   const colId = col?.colId || "";
-  return `\u{1F410} nibbling on ${tableId}.${colId}[${_goat.snack}]`;
+  const verb = MUNCH_VERBS[_goat.frame % MUNCH_VERBS.length];
+  return `\u{1F410} ${verb} ${tableId}.${colId}[${_goat.snack}] \u00B7 ${_goat.munchCount} nibbles`;
 }

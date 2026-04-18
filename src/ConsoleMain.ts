@@ -135,6 +135,11 @@ export async function consoleMain(options: {
     const shouldRun = isGoatTheme(state.theme)
       && (state.mode === "grid" || state.mode === "editing");
     if (shouldRun && !goatTimer) {
+      // Place the goat right away so the user sees it on the very next
+      // render (otherwise they'd wait up to 1500ms wondering where the
+      // goat is), then keep it wandering on the interval.
+      stepGoat(state);
+      doRender(state);
       goatTimer = setInterval(() => {
         stepGoat(state);
         doRender(state);

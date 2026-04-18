@@ -22,7 +22,7 @@ import {
   applyChoiceColor, editWindow,
 } from "./ConsoleDisplay.js";
 import { computeColLayout, getStatusLine, isNumericType } from "./ConsoleRenderer.js";
-import { goatSpriteFor } from "./GoatAnimation.js";
+import { renderGoatOverlay } from "./GoatAnimation.js";
 
 export function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
@@ -89,6 +89,11 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
       CLEAR_LINE;
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
+
+  // Goat overlay: paints the wandering ASCII sprite on top of the
+  // already-drawn pane. Positioned by screen coords so the multi-line
+  // art doesn't get chopped by cell boundaries.
+  output += renderGoatOverlay(state, trayHeight, termRows, termCols);
 
   // Show terminal cursor at edit position when editing in a grid pane
   if (state.mode === "editing" && !state.cellViewerContent) {
@@ -259,14 +264,7 @@ function renderPaneInto(
       const padFn = isNumericType(colType) ? padLeft : padRight;
       const isCurrentCell = isFocused && rowIdx === pane.cursorRow && ci === pane.cursorCol;
 
-      // Goat overlay: the theme's wandering goat paints sprites on top
-      // of cells it's currently visiting (or has recently grazed).
-      // Never covers the user's cursor cell.
-      const sprite = !isCurrentCell ? goatSpriteFor(paneIdx, rowIdx, ci) : null;
-      if (sprite) {
-        const sw = displayWidth(sprite);
-        line += t.colSeparator + sprite + " ".repeat(Math.max(0, col.width - sw));
-      } else if (mode === "editing" && isCurrentCell) {
+      if (mode === "editing" && isCurrentCell) {
         const { text: editDisplay } = editWindow(editValue, editCursorPos, col.width);
         line += t.colSeparator + t.cursor(editDisplay);
       } else if (isCurrentCell) {

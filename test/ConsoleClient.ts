@@ -12,7 +12,7 @@ import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZw
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
 import { getVisualPaneOrder, clearViewState } from "../src/ConsoleMain.js";
 import { getThemeNames, getTheme } from "../src/ConsoleTheme.js";
-import { stepGoat, resetGoat, getGoat, goatSpriteFor } from "../src/GoatAnimation.js";
+import { stepGoat, resetGoat, getGoat, goatStatus, renderGoatOverlay } from "../src/GoatAnimation.js";
 import {
   applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter,
   applyAllSectionLinks,
@@ -2509,34 +2509,29 @@ describe("ConsoleClient", function() {
       }
     });
 
-    it("goatSpriteFor returns a sprite at the goat's current cell", function() {
+    it("renderGoatOverlay emits sprite lines when a goat is placed", function() {
       const s = goatState();
-      stepGoat(s);
-      const g = getGoat()!;
-      const sprite = goatSpriteFor(g.paneIdx, g.rowIdx, g.colIdx);
-      assert.isOk(sprite, "goat cell should have a sprite");
-      // Wrong cell -> no sprite (unless it happens to be a trail cell).
-      const far = goatSpriteFor(g.paneIdx, (g.rowIdx + 3) % 5, (g.colIdx + 2) % 3);
-      assert.isNotOk(far);
+      s.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
+      // Step until the goat lands somewhere the whole sprite fits (not
+      // the top-most row, where the top horn line would be clipped by
+      // the header). Random wandering finds it quickly.
+      for (let i = 0; i < 50 && (!getGoat() || getGoat()!.rowIdx < 1); i++) {
+        stepGoat(s);
+      }
+      assert.isAtLeast(getGoat()!.rowIdx, 1);
+      const out = renderGoatOverlay(s, 0, 24, 80);
+      assert.match(out, /,,_,,/, "overlay should include the sprite's horns");
+      assert.match(out, /\(o {3}o\)|\(O {3}O\)/,
+        "overlay should include the sprite's face");
     });
 
-    it("records a trail after multiple steps", function() {
+    it("records a trail across multiple steps", function() {
       const s = goatState();
       stepGoat(s);
-      const first = { ...getGoat()! };
       stepGoat(s);
-      const second = getGoat()!;
-      // The previous position is now a trail cell; sprite present there too.
-      const trailSprite = goatSpriteFor(first.paneIdx, first.rowIdx, first.colIdx);
-      // Could be null if the goat happened to step right back -- but the
-      // goat intentionally wanders to neighbours, so "stepped back to where
-      // it was" is unlikely. Allow either: sprite is the goat's current
-      // position, or it's a trail mark.
-      if (second.rowIdx === first.rowIdx && second.colIdx === first.colIdx) {
-        assert.isOk(trailSprite, "goat stayed put -- cell still has sprite");
-      } else {
-        assert.isOk(trailSprite, "previous position should be a trail cell");
-      }
+      const g = getGoat()!;
+      assert.isAtLeast(g.trail.length, 1, "trail should grow by one per step");
+      assert.equal(g.trail[0].paneIdx, 0);
     });
 
     it("resets when the focused pane has no rows / no cols", function() {
@@ -2548,6 +2543,33 @@ describe("ConsoleClient", function() {
       s.panes[0] = makePane({ columns: [], rowIds: [], colValues: {} });
       stepGoat(s);
       assert.isNull(getGoat(), "goat should disappear on an empty pane");
+    });
+
+    it("munchCount increments on each step", function() {
+      const s = goatState();
+      stepGoat(s);
+      assert.equal(getGoat()!.munchCount, 1);
+      stepGoat(s);
+      stepGoat(s);
+      assert.equal(getGoat()!.munchCount, 3);
+    });
+
+    it("goatStatus reports cell + count and cycles verbs across steps", function() {
+      const s = goatState();
+      s.currentTableId = "People";
+      const verbs = new Set<string>();
+      for (let i = 0; i < 10; i++) {
+        stepGoat(s);
+        const status = goatStatus(s);
+        assert.isOk(status);
+        assert.match(status!, /\u{1F410}/u, "status should include the goat emoji");
+        assert.match(status!, /nibbles$/, "status should end with nibble count");
+        // Grab the verb (first word after the emoji)
+        const m = status!.match(/\u{1F410}\s+(\w+)/u);
+        if (m) { verbs.add(m[1]); }
+      }
+      // Across 10 steps we should see more than one verb -- they cycle.
+      assert.isAbove(verbs.size, 1, "multiple munch verbs should cycle");
     });
   });
 
