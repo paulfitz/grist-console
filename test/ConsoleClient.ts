@@ -8,7 +8,8 @@ import {
 import { createInitialState, render, PaneState, displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleRenderer.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
-import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter, getVisualPaneOrder } from "../src/ConsoleMain.js";
+import { getVisualPaneOrder } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter } from "../src/LinkingState.js";
 import { appendRowToColValues } from "../src/ActionDispatcher.js";
 import { handleOwnActionGroup, _setExpectingRedo } from "../src/UndoStack.js";
 import { parseGristDocUrl } from "../src/urlParser.js";

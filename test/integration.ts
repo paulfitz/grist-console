@@ -11,7 +11,7 @@ import {
   extractPages, extractSectionsForView, extractFiltersForSection,
   getLayoutSpecForView, parseLayoutSpec, computeLayout, Rect,
 } from "../src/ConsoleLayout.js";
-import { applySortSpec, applySectionFilters } from "../src/ConsoleMain.js";
+import { applySortSpec, applySectionFilters } from "../src/LinkingState.js";
 import { appendRowToColValues } from "../src/ActionDispatcher.js";
 import { computeInsertManualSort } from "../src/ConsoleInput.js";
 
