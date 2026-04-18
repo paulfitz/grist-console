@@ -3,9 +3,8 @@ import { ConsoleConnection } from "./ConsoleConnection.js";
 import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
 import { render, showCursor } from "./ConsoleRenderer.js";
 import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleDisplay.js";
-import {
-  executeAddRow, executeDeleteRow, executeSaveEdit, handleKeypress
-} from "./ConsoleInput.js";
+import { handleKeypress } from "./ConsoleInput.js";
+import { executeAddRow, executeDeleteRow, executeSaveEdit } from "./Commands.js";
 import {
   extractPages, extractSectionsForView,
   extractCollapsedSectionIds, getLayoutSpecForView,

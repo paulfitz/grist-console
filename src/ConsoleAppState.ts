@@ -115,3 +115,13 @@ export function activeView(state: AppState): PaneState | undefined {
   }
   return state.panes[state.focusedPane];
 }
+
+/**
+ * Mode to switch back to when leaving edit mode -- preserves the underlying
+ * view (cell viewer takes precedence, then overlay, then grid).
+ */
+export function editReturnMode(state: AppState): AppMode {
+  if (state.cellViewerContent) { return "cell_viewer"; }
+  if (state.overlayPaneIndex !== null) { return "overlay"; }
+  return "grid";
+}

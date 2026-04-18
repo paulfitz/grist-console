@@ -1,9 +1,7 @@
-import { AppMode, AppState, isCardPane, PaneState, activeView } from "./ConsoleAppState.js";
+import { AppState, isCardPane, PaneState, activeView, editReturnMode } from "./ConsoleAppState.js";
 import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
-import { CellValue } from "./types.js";
 import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
-import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
-import { ConsoleConnection } from "./ConsoleConnection.js";
+import { formatCellValue } from "./ConsoleCellFormat.js";
 import { computeColLayout } from "./ConsoleRenderer.js";
 
 /**
@@ -173,12 +171,6 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
 /**
  * Handle a keypress in edit mode.
  */
-function editReturnMode(state: AppState): AppMode {
-  if (state.cellViewerContent) { return "cell_viewer"; }
-  if (state.overlayPaneIndex !== null) { return "overlay"; }
-  return "grid";
-}
-
 function handleEditKey(key: string, state: AppState): InputAction {
   switch (key) {
     case "escape":
@@ -642,88 +634,3 @@ export function handleKeypress(buf: Buffer, state: AppState): InputAction {
 /**
  * Execute a save_edit action: send the edit to the server.
  */
-export async function executeSaveEdit(state: AppState, conn: ConsoleConnection): Promise<void> {
-  const pane = activeView(state);
-  if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
-  const col = pane.columns[pane.cursorCol];
-  const rowId = pane.rowIds[pane.cursorRow];
-
-  const parsed = parseCellInput(state.editValue, col.type);
-  try {
-    await conn.applyUserActions([
-      ["UpdateRecord", tableId, rowId, { [col.colId]: parsed }],
-    ]);
-    state.statusMessage = "Saved";
-  } catch (e: any) {
-    state.statusMessage = `Error: ${e.message}`;
-  }
-  // Return to cell viewer/overlay/grid as appropriate
-  state.mode = editReturnMode(state);
-  // If returning to cell viewer, update the content with the saved value
-  if (state.mode === "cell_viewer") {
-    state.cellViewerContent = state.editValue;
-  }
-}
-
-/**
- * Execute an add_row action.
- */
-export async function executeAddRow(state: AppState, conn: ConsoleConnection): Promise<void> {
-  const pane = activeView(state);
-  if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
-  const manualSort = computeInsertManualSort(pane.colValues.manualSort, pane.cursorRow, pane.rowIds.length);
-  try {
-    const payload: Record<string, any> = {};
-    if (manualSort !== undefined) { payload.manualSort = manualSort; }
-    await conn.applyUserActions([
-      ["AddRecord", tableId, null, payload],
-    ]);
-    state.statusMessage = "Row added";
-  } catch (e: any) {
-    state.statusMessage = `Error: ${e.message}`;
-  }
-}
-
-/**
- * Compute a manualSort value for a new row inserted ABOVE the cursor
- * position. Matches the web client's behavior: pass the cursor row's
- * current manualSort value; the server's position-assignment algorithm
- * places the new row just before it (midpoint with the row above, or
- * relabels if needed).
- *
- * Returns undefined to mean "insert at end" (no position hint) when we
- * can't determine a manualSort (empty table, no manualSort column, or
- * non-numeric value).
- */
-export function computeInsertManualSort(
-  sortCol: CellValue[] | undefined, cursorRow: number, rowCount: number,
-): number | undefined {
-  if (!sortCol || rowCount === 0) { return undefined; }
-  const cursor = sortCol[cursorRow];
-  if (typeof cursor !== "number") { return undefined; }
-  return cursor;
-}
-
-/**
- * Execute a delete_row action.
- */
-export async function executeDeleteRow(state: AppState, conn: ConsoleConnection): Promise<void> {
-  const pane = activeView(state);
-  if (!pane) { return; }
-  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
-  const rowId = pane.rowIds[pane.cursorRow];
-
-  try {
-    await conn.applyUserActions([
-      ["RemoveRecord", tableId, rowId],
-    ]);
-    state.statusMessage = `Row ${rowId} deleted`;
-    if (pane.cursorRow >= pane.rowIds.length - 1 && pane.cursorRow > 0) {
-      pane.cursorRow--;
-    }
-  } catch (e: any) {
-    state.statusMessage = `Error: ${e.message}`;
-  }
-}

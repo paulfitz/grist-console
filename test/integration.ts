@@ -13,7 +13,7 @@ import {
 } from "../src/ConsoleLayout.js";
 import { applySortSpec, applySectionFilters } from "../src/LinkingState.js";
 import { appendRowToColValues } from "../src/ActionDispatcher.js";
-import { computeInsertManualSort } from "../src/ConsoleInput.js";
+import { computeInsertManualSort } from "../src/Commands.js";
 
 function defaultVal(colType: string): any {
   const base = colType.split(":")[0];
