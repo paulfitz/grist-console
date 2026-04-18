@@ -311,16 +311,18 @@ export function getVisualPaneOrder(state: AppState): number[] {
 }
 
 /**
- * Drop all loaded view state (panes, layout, box spec). Used when leaving
- * grid mode for a picker, or when a load is about to start.
+ * Drop all loaded view state (panes, layout, box spec, schema-stale flag).
+ * Used when leaving grid mode for a picker, or when a load is about to
+ * start. Exported so tests can verify the reset shape.
  */
-function clearViewState(state: AppState): void {
+export function clearViewState(state: AppState): void {
   state.panes = [];
   state.layout = null;
   state.boxSpec = null;
   state.focusedPane = 0;
   state.overlayPaneIndex = null;
   state.collapsedPaneIndices = [];
+  state.schemaStale = false;
 }
 
 /**

@@ -10,10 +10,14 @@ import { render } from "../src/ConsoleRenderer.js";
 import { displayWidth, flattenToLine, applyChoiceColor, editWindow } from "../src/ConsoleDisplay.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
-import { getVisualPaneOrder } from "../src/ConsoleMain.js";
-import { applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter } from "../src/LinkingState.js";
+import { getVisualPaneOrder, clearViewState } from "../src/ConsoleMain.js";
+import {
+  applySortSpec, applySectionFilters, compareCellValues, reapplySortAndFilter,
+  applyAllSectionLinks,
+} from "../src/LinkingState.js";
 import { appendRowToColValues, applyDocActions } from "../src/ActionDispatcher.js";
 import { handleOwnActionGroup } from "../src/UndoStack.js";
+import { executeSaveEdit } from "../src/Commands.js";
 import { parseGristDocUrl } from "../src/urlParser.js";
 import { GristObjCode } from "../src/types.js";
 
@@ -2084,6 +2088,349 @@ describe("ConsoleClient", function() {
 
     it("returns null for URL with no doc ID", function() {
       assert.isNull(parseGristDocUrl("https://docs.getgrist.com/"));
+    });
+  });
+
+  // ===================== Robustness gap tests =====================
+
+  describe("applyDocActionToPane (edge cases via applyDocActions)", function() {
+    function paneState(rowIds: number[], colValues: Record<string, any[]>) {
+      const s = createInitialState("test");
+      s.currentTableId = "T";
+      s.panes = [makePane({
+        columns: Object.keys(colValues).map(k => ({ colId: k, type: "Text", label: k })),
+        rowIds,
+        colValues,
+      })];
+      return s;
+    }
+
+    it("BulkUpdateRecord with mixed-known/unknown rowIds skips the unknowns", function() {
+      const s = paneState([1, 2, 3], { Name: ["A", "B", "C"] });
+      // Row 99 doesn't exist in the pane; rows 1 and 3 do.
+      applyDocActions(s, [
+        ["BulkUpdateRecord", "T", [1, 99, 3], { Name: ["A2", "Bogus", "C2"] }] as any,
+      ]);
+      assert.deepEqual(s.panes[0].colValues.Name, ["A2", "B", "C2"]);
+      // allColValues should also be updated
+      assert.deepEqual(s.panes[0].allColValues.Name, ["A2", "B", "C2"]);
+    });
+
+    it("UpdateRecord against an unknown column is silently ignored", function() {
+      const s = paneState([1, 2], { Name: ["A", "B"] });
+      // Server adds a column we don't know about (filtered out as hidden).
+      applyDocActions(s, [
+        ["UpdateRecord", "T", 1, { Name: "A2", SecretCol: "x" }] as any,
+      ]);
+      assert.deepEqual(s.panes[0].colValues.Name, ["A2", "B"]);
+      // The unknown column should NOT have been added to colValues.
+      assert.notProperty(s.panes[0].colValues, "SecretCol");
+    });
+
+    it("UpdateRecord on a row in allRowIds but filtered out only updates allColValues", function() {
+      const s = paneState([1, 2, 3], { Name: ["A", "B", "C"] });
+      // Simulate a filter: row 2 is in allRowIds but not visible.
+      s.panes[0].rowIds = [1, 3];
+      s.panes[0].colValues = { Name: ["A", "C"] };
+
+      applyDocActions(s, [["UpdateRecord", "T", 2, { Name: "B2" }] as any]);
+
+      // allColValues holds the truth for row 2.
+      assert.deepEqual(s.panes[0].allColValues.Name, ["A", "B2", "C"]);
+      // The visible view doesn't contain row 2, so colValues is unchanged.
+      assert.deepEqual(s.panes[0].colValues.Name, ["A", "C"]);
+    });
+
+    it("RemoveRecord on a visible row clamps the cursor", function() {
+      const s = paneState([1, 2, 3], { Name: ["A", "B", "C"] });
+      s.panes[0].cursorRow = 2; // on row 3 (last)
+      applyDocActions(s, [["RemoveRecord", "T", 3] as any]);
+      // Pane shrunk to 2 rows; cursor clamped to last index (1).
+      assert.deepEqual(s.panes[0].rowIds, [1, 2]);
+      assert.equal(s.panes[0].cursorRow, 1);
+    });
+
+    it("BulkRemoveRecord removes all matched rows in one pass and clamps once", function() {
+      const s = paneState([1, 2, 3, 4], { Name: ["A", "B", "C", "D"] });
+      s.panes[0].cursorRow = 3;
+      applyDocActions(s, [["BulkRemoveRecord", "T", [2, 4]] as any]);
+      assert.deepEqual(s.panes[0].rowIds, [1, 3]);
+      assert.equal(s.panes[0].cursorRow, 1);
+    });
+
+    it("RemoveRecord on an unknown rowId is a no-op", function() {
+      const s = paneState([1, 2], { Name: ["A", "B"] });
+      applyDocActions(s, [["RemoveRecord", "T", 99] as any]);
+      assert.deepEqual(s.panes[0].rowIds, [1, 2]);
+      assert.deepEqual(s.panes[0].colValues.Name, ["A", "B"]);
+    });
+  });
+
+  describe("Commands.executeSaveEdit (ParseError catch)", function() {
+    // Minimal stand-in for ConsoleConnection -- only applyUserActions is touched.
+    function makeFakeConn() {
+      const calls: any[][] = [];
+      return {
+        calls,
+        applyUserActions: async (actions: any[]) => {
+          calls.push(actions);
+          return {};
+        },
+      } as any;
+    }
+
+    function editingState(colType: string, editValue: string) {
+      const s = createInitialState("test");
+      s.mode = "editing";
+      s.currentTableId = "T";
+      s.panes = [makePane({
+        columns: [{ colId: "Age", type: colType, label: "Age" }],
+        rowIds: [1, 2],
+        colValues: { Age: [10, 20] },
+      })];
+      s.editValue = editValue;
+      return s;
+    }
+
+    it("rejects invalid input without sending an RPC", async function() {
+      const s = editingState("Int", "not-a-number");
+      const conn = makeFakeConn();
+      await executeSaveEdit(s, conn);
+      assert.equal(conn.calls.length, 0, "no RPC should be sent for invalid input");
+      assert.equal(s.mode, "editing", "should stay in edit mode so user can fix");
+      assert.match(s.statusMessage, /Invalid Int value/);
+    });
+
+    it("sends RPC and exits edit mode for valid input", async function() {
+      const s = editingState("Int", "42");
+      const conn = makeFakeConn();
+      await executeSaveEdit(s, conn);
+      assert.equal(conn.calls.length, 1);
+      assert.deepEqual(conn.calls[0], [["UpdateRecord", "T", 1, { Age: 42 }]]);
+      assert.notEqual(s.mode, "editing", "should leave edit mode after save");
+      assert.equal(s.statusMessage, "Saved");
+    });
+
+    it("propagates non-ParseError errors as a status message", async function() {
+      const s = editingState("Int", "42");
+      const conn = {
+        applyUserActions: async () => { throw new Error("network down"); },
+      } as any;
+      await executeSaveEdit(s, conn);
+      assert.match(s.statusMessage, /Error.*network down/);
+    });
+  });
+
+  describe("LinkingState section linking variants", function() {
+    // Build a state with two panes: a source (pane 0) and a target (pane 1)
+    // linked according to the link* refs on the target's sectionInfo.
+    function linkedPanes(opts: {
+      srcRowIds: number[]; srcColValues: Record<string, any[]>;
+      tgtRowIds: number[]; tgtColValues: Record<string, any[]>;
+      linkSrcColRef: number; linkTargetColRef: number;
+      tgtColIdForRef?: string; // colId in target whose colRef is linkTargetColRef
+      srcColIdForRef?: string; // colId in source whose colRef is linkSrcColRef
+    }) {
+      const s = createInitialState("test");
+      s.panes = [
+        makePane({
+          sectionInfo: {
+            sectionId: 100, tableRef: 1, tableId: "Src", parentKey: "record",
+            title: "Src", linkSrcSectionRef: 0, linkSrcColRef: 0,
+            linkTargetColRef: 0, sortColRefs: "",
+          },
+          columns: Object.keys(opts.srcColValues).map(k => ({ colId: k, type: "Text", label: k })),
+          rowIds: opts.srcRowIds,
+          colValues: opts.srcColValues,
+        }),
+        makePane({
+          sectionInfo: {
+            sectionId: 200, tableRef: 2, tableId: "Tgt", parentKey: "record",
+            title: "Tgt", linkSrcSectionRef: 100,
+            linkSrcColRef: opts.linkSrcColRef,
+            linkTargetColRef: opts.linkTargetColRef,
+            sortColRefs: "",
+          },
+          columns: Object.keys(opts.tgtColValues).map(k => ({ colId: k, type: "Text", label: k })),
+          rowIds: opts.tgtRowIds,
+          colValues: opts.tgtColValues,
+        }),
+      ];
+      // Build a metaTables that maps the link colRefs back to colIds
+      const colIds: string[] = [];
+      const colRefs: number[] = [];
+      const parentIds: number[] = [];
+      if (opts.linkTargetColRef && opts.tgtColIdForRef) {
+        colIds.push(opts.tgtColIdForRef);
+        colRefs.push(opts.linkTargetColRef);
+        parentIds.push(2);
+      }
+      if (opts.linkSrcColRef && opts.srcColIdForRef) {
+        colIds.push(opts.srcColIdForRef);
+        colRefs.push(opts.linkSrcColRef);
+        parentIds.push(1);
+      }
+      const meta = {
+        _grist_Tables_column: ["TableData", "_grist_Tables_column", colRefs,
+          { colId: colIds, parentId: parentIds, type: colIds.map(() => "Text"), label: colIds }],
+      };
+      return { state: s, meta };
+    }
+
+    it("cursor sync (both refs 0): target cursor follows source rowId", function() {
+      const { state, meta } = linkedPanes({
+        srcRowIds: [10, 20, 30], srcColValues: { Name: ["A", "B", "C"] },
+        tgtRowIds: [10, 20, 30], tgtColValues: { Note: ["x", "y", "z"] },
+        linkSrcColRef: 0, linkTargetColRef: 0,
+      });
+      state.panes[0].cursorRow = 1; // source on row 20
+      applyAllSectionLinks(state, meta);
+      // Target should have cursor on the rowId matching source (rowId 20 → idx 1)
+      assert.equal(state.panes[1].cursorRow, 1);
+    });
+
+    it("filter-by-rowId (srcColRef=0, tgtColRef>0): show target rows where target.tgtCol == source.rowId", function() {
+      const { state, meta } = linkedPanes({
+        srcRowIds: [1, 2], srcColValues: { Name: ["A", "B"] },
+        tgtRowIds: [10, 11, 12, 13],
+        tgtColValues: { Owner: [1, 2, 1, 2], Task: ["t1", "t2", "t3", "t4"] },
+        linkSrcColRef: 0, linkTargetColRef: 50, tgtColIdForRef: "Owner",
+      });
+      state.panes[0].cursorRow = 0; // source row 1
+      applyAllSectionLinks(state, meta);
+      // Target should show rows where Owner == 1 → rowIds 10 and 12
+      assert.deepEqual(state.panes[1].rowIds, [10, 12]);
+      assert.deepEqual(state.panes[1].colValues.Task, ["t1", "t3"]);
+    });
+
+    it("filter-by-value (srcColRef>0, tgtColRef>0): show target rows where target.tgtCol == source.srcColValue", function() {
+      const { state, meta } = linkedPanes({
+        srcRowIds: [1, 2], srcColValues: { Tag: ["red", "blue"] },
+        tgtRowIds: [10, 11, 12],
+        tgtColValues: { Color: ["red", "blue", "red"], Name: ["a", "b", "c"] },
+        linkSrcColRef: 40, linkTargetColRef: 50,
+        srcColIdForRef: "Tag", tgtColIdForRef: "Color",
+      });
+      state.panes[0].cursorRow = 0; // source row 1, Tag = "red"
+      applyAllSectionLinks(state, meta);
+      // Target should show rows where Color == "red" → rowIds 10, 12
+      assert.deepEqual(state.panes[1].rowIds, [10, 12]);
+      assert.deepEqual(state.panes[1].colValues.Name, ["a", "c"]);
+    });
+
+    it("cursor-follows-ref (srcColRef>0, tgtColRef=0): target cursor follows source's ref-column value", function() {
+      const { state, meta } = linkedPanes({
+        srcRowIds: [1, 2, 3], srcColValues: { TgtRef: [30, 10, 20] },
+        tgtRowIds: [10, 20, 30], tgtColValues: { Name: ["a", "b", "c"] },
+        linkSrcColRef: 40, linkTargetColRef: 0, srcColIdForRef: "TgtRef",
+      });
+      state.panes[0].cursorRow = 0; // source row 1, TgtRef = 30
+      applyAllSectionLinks(state, meta);
+      // Target rows are unfiltered; cursor should land on rowId 30 (idx 2)
+      assert.equal(state.panes[1].cursorRow, 2);
+    });
+  });
+
+  describe("handleEditKey (edit-mode buffer)", function() {
+    function editing(value = "", cursor?: number) {
+      const s = createInitialState("test");
+      s.mode = "editing";
+      s.editValue = value;
+      s.editCursorPos = cursor ?? value.length;
+      return s;
+    }
+
+    it("inserts a character at cursor position", function() {
+      const s = editing("ab", 1); // cursor between a and b
+      handleKeypress(Buffer.from("X"), s);
+      assert.equal(s.editValue, "aXb");
+      assert.equal(s.editCursorPos, 2);
+    });
+
+    it("inserts multi-byte UTF-8 characters", function() {
+      const s = editing("a", 1);
+      // é (U+00E9) as UTF-8 is two bytes: 0xc3 0xa9
+      handleKeypress(Buffer.from([0xc3, 0xa9]), s);
+      assert.equal(s.editValue, "aé");
+    });
+
+    it("backspace deletes char before cursor; no-op at start", function() {
+      const s = editing("abc", 2);
+      handleKeypress(Buffer.from([0x7f]), s); // backspace
+      assert.equal(s.editValue, "ac");
+      assert.equal(s.editCursorPos, 1);
+      // At start: no-op
+      const s2 = editing("abc", 0);
+      handleKeypress(Buffer.from([0x7f]), s2);
+      assert.equal(s2.editValue, "abc");
+    });
+
+    it("delete removes char at cursor; no-op at end", function() {
+      const s = editing("abc", 1);
+      handleKeypress(Buffer.from([0x1b, 0x5b, 0x33, 0x7e]), s); // ESC[3~ = delete
+      assert.equal(s.editValue, "ac");
+      assert.equal(s.editCursorPos, 1);
+      const s2 = editing("abc", 3);
+      handleKeypress(Buffer.from([0x1b, 0x5b, 0x33, 0x7e]), s2);
+      assert.equal(s2.editValue, "abc");
+    });
+
+    it("left/right arrows move within bounds", function() {
+      const s = editing("abc", 1);
+      handleKeypress(Buffer.from([0x1b, 0x5b, 0x44]), s); // left
+      assert.equal(s.editCursorPos, 0);
+      handleKeypress(Buffer.from([0x1b, 0x5b, 0x44]), s); // left at 0 = no-op
+      assert.equal(s.editCursorPos, 0);
+      handleKeypress(Buffer.from([0x1b, 0x5b, 0x43]), s); // right
+      assert.equal(s.editCursorPos, 1);
+    });
+
+    it("Enter requests save_edit", function() {
+      const s = editing("hello");
+      const action = handleKeypress(Buffer.from("\r"), s);
+      assert.equal(action.type, "save_edit");
+    });
+
+    it("Escape exits edit mode without saving", function() {
+      const s = editing("hello");
+      handleKeypress(Buffer.from([0x1b]), s);
+      assert.notEqual(s.mode, "editing");
+    });
+  });
+
+  describe("clearViewState", function() {
+    it("resets pane / layout / boxSpec / focused / overlay / collapsed / schemaStale", function() {
+      const s = createInitialState("test");
+      s.panes = [makePane({ columns: [], rowIds: [], colValues: {} })];
+      s.layout = { top: 0, left: 0, width: 1, height: 1, paneIndex: 0 };
+      s.boxSpec = { leaf: 1 };
+      s.focusedPane = 5;
+      s.overlayPaneIndex = 3;
+      s.collapsedPaneIndices = [0, 2];
+      s.schemaStale = true;
+
+      clearViewState(s);
+
+      assert.deepEqual(s.panes, []);
+      assert.isNull(s.layout);
+      assert.isNull(s.boxSpec);
+      assert.equal(s.focusedPane, 0);
+      assert.isNull(s.overlayPaneIndex);
+      assert.deepEqual(s.collapsedPaneIndices, []);
+      assert.isFalse(s.schemaStale, "switching mode should clear stale-schema warning too");
+    });
+
+    it("preserves unrelated state (mode, theme, status, undo stack)", function() {
+      const s = createInitialState("test");
+      s.mode = "page_picker";
+      s.statusMessage = "hi";
+      s.undoStack = [{ actionNum: 1, actionHash: "h1" }];
+      s.undoPointer = 1;
+      clearViewState(s);
+      assert.equal(s.mode, "page_picker");
+      assert.equal(s.statusMessage, "hi");
+      assert.deepEqual(s.undoStack, [{ actionNum: 1, actionHash: "h1" }]);
+      assert.equal(s.undoPointer, 1);
     });
   });
 });
