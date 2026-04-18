@@ -293,22 +293,18 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
 /**
  * Handle a keypress in multi-pane grid mode.
  */
-function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
-  const pane = state.panes[state.focusedPane];
-  if (!pane) { return { type: "none" }; }
-
-  if (isCardPane(pane)) {
-    return handleCardPaneKey(key, state, pane);
-  }
-
+/**
+ * Movement + edit triggers shared by the multi-pane grid and the overlay view.
+ * Returns an InputAction, or "none" if the key wasn't handled here so the caller
+ * can try its mode-specific bindings.
+ */
+function handleGridViewKey(
+  key: string, state: AppState, pane: PaneState, availWidth: number,
+): InputAction {
   const termRows = process.stdout.rows || 24;
   const pageSize = Math.max(1, termRows - 5);
 
   switch (key) {
-    case "tab":
-      return { type: "focus_next_pane" };
-    case "shift-tab":
-      return { type: "focus_prev_pane" };
     case "up":
       if (pane.cursorRow > 0) {
         pane.cursorRow--;
@@ -329,15 +325,13 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
     case "left":
       if (pane.cursorCol > 0) {
         pane.cursorCol--;
-        const leaf = getLeafForPane(state, state.focusedPane);
-        ensureColVisible(pane, leaf?.width || (process.stdout.columns || 80));
+        ensureColVisible(pane, availWidth);
       }
       return { type: "render" };
     case "right":
       if (pane.cursorCol < pane.columns.length - 1) {
         pane.cursorCol++;
-        const leaf = getLeafForPane(state, state.focusedPane);
-        ensureColVisible(pane, leaf?.width || (process.stdout.columns || 80));
+        ensureColVisible(pane, availWidth);
       }
       return { type: "render" };
     case "pageup":
@@ -361,7 +355,7 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "enter":
       if (pane.rowIds.length > 0 && pane.columns.length > 0) {
-        enterPaneEditMode(state);
+        enterPaneEditMode(state, pane);
       }
       return { type: "render" };
     case "a":
@@ -373,35 +367,55 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
       return { type: "render" };
     case "v":
       return { type: "view_cell" };
+    case "q":
+    case "ctrl-c":
+      return { type: "quit" };
+    default:
+      return { type: "none" };
+  }
+}
+
+function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
+  const pane = state.panes[state.focusedPane];
+  if (!pane) { return { type: "none" }; }
+
+  if (isCardPane(pane)) {
+    return handleCardPaneKey(key, state, pane);
+  }
+
+  switch (key) {
+    case "tab":
+      return { type: "focus_next_pane" };
+    case "shift-tab":
+      return { type: "focus_prev_pane" };
     case "u":
       return { type: "undo" };
     case "U":
       return { type: "redo" };
     case "escape":
+    case "p":
       return { type: "switch_to_pages" };
     case "r":
       return { type: "refresh" };
-    case "p":
-      return { type: "switch_to_pages" };
     case "t":
       return { type: "switch_to_tables" };
     case "T":
       return { type: "cycle_theme" };
-    case "q":
-    case "ctrl-c":
-      return { type: "quit" };
-    default:
-      // Number keys 1-9: open collapsed widget overlay
-      if (/^[1-9]$/.test(key) && state.collapsedPaneIndices.length > 0) {
-        const idx = parseInt(key, 10) - 1;
-        if (idx < state.collapsedPaneIndices.length) {
-          state.overlayPaneIndex = state.collapsedPaneIndices[idx];
-          state.mode = "overlay";
-          return { type: "render" };
-        }
-      }
-      return { type: "none" };
   }
+
+  // Number keys 1-9: open collapsed widget overlay
+  if (/^[1-9]$/.test(key) && state.collapsedPaneIndices.length > 0) {
+    const idx = parseInt(key, 10) - 1;
+    if (idx < state.collapsedPaneIndices.length) {
+      state.overlayPaneIndex = state.collapsedPaneIndices[idx];
+      state.mode = "overlay";
+      return { type: "render" };
+    }
+  }
+
+  const leaf = getLeafForPane(state, state.focusedPane);
+  const availWidth = leaf?.width || (process.stdout.columns || 80);
+  return handleGridViewKey(key, state, pane, availWidth);
 }
 
 /**
@@ -598,94 +612,19 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
     return { type: "render" };
   }
 
+  if (key === "escape") { return { type: "close_overlay" }; }
+
   if (isCardPane(pane)) {
-    switch (key) {
-      case "escape":
-        return { type: "close_overlay" };
-      default: {
-        const savedFocused = state.focusedPane;
-        state.focusedPane = state.overlayPaneIndex;
-        const result = handleCardPaneKey(key, state, pane);
-        state.focusedPane = savedFocused;
-        return result;
-      }
-    }
+    // Card-pane handler reads state.focusedPane; in overlay mode the user is
+    // interacting with the overlay pane, so pretend it's focused for this call.
+    const savedFocused = state.focusedPane;
+    state.focusedPane = state.overlayPaneIndex;
+    const result = handleCardPaneKey(key, state, pane);
+    state.focusedPane = savedFocused;
+    return result;
   }
 
-  const termRows = process.stdout.rows || 24;
-  const pageSize = Math.max(1, termRows - 5);
-
-  switch (key) {
-    case "escape":
-      return { type: "close_overlay" };
-    case "up":
-      if (pane.cursorRow > 0) {
-        pane.cursorRow--;
-        if (pane.cursorRow < pane.scrollRow) {
-          pane.scrollRow = pane.cursorRow;
-        }
-      }
-      return { type: "render" };
-    case "down":
-      if (pane.cursorRow < pane.rowIds.length - 1) {
-        pane.cursorRow++;
-        const dataRows = Math.max(1, termRows - 5);
-        if (pane.cursorRow >= pane.scrollRow + dataRows) {
-          pane.scrollRow = pane.cursorRow - dataRows + 1;
-        }
-      }
-      return { type: "render" };
-    case "left":
-      if (pane.cursorCol > 0) {
-        pane.cursorCol--;
-        ensureColVisible(pane, process.stdout.columns || 80);
-      }
-      return { type: "render" };
-    case "right":
-      if (pane.cursorCol < pane.columns.length - 1) {
-        pane.cursorCol++;
-        ensureColVisible(pane, process.stdout.columns || 80);
-      }
-      return { type: "render" };
-    case "pageup":
-      pane.cursorRow = Math.max(0, pane.cursorRow - pageSize);
-      pane.scrollRow = Math.max(0, pane.scrollRow - pageSize);
-      return { type: "render" };
-    case "pagedown":
-      pane.cursorRow = Math.min(pane.rowIds.length - 1, pane.cursorRow + pageSize);
-      pane.scrollRow = Math.min(
-        Math.max(0, pane.rowIds.length - pageSize),
-        pane.scrollRow + pageSize
-      );
-      return { type: "render" };
-    case "home":
-      pane.cursorRow = 0;
-      pane.scrollRow = 0;
-      return { type: "render" };
-    case "end":
-      pane.cursorRow = Math.max(0, pane.rowIds.length - 1);
-      pane.scrollRow = Math.max(0, pane.rowIds.length - pageSize);
-      return { type: "render" };
-    case "enter":
-      if (pane.rowIds.length > 0 && pane.columns.length > 0) {
-        enterPaneEditMode(state, pane);
-      }
-      return { type: "render" };
-    case "a":
-      return { type: "add_row" };
-    case "d":
-      if (pane.rowIds.length > 0) {
-        state.mode = "confirm_delete";
-      }
-      return { type: "render" };
-    case "v":
-      return { type: "view_cell" };
-    case "q":
-    case "ctrl-c":
-      return { type: "quit" };
-    default:
-      return { type: "none" };
-  }
+  return handleGridViewKey(key, state, pane, process.stdout.columns || 80);
 }
 
 /**
