@@ -25,6 +25,13 @@ function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
   _applyAllSectionLinks(state, conn.getMetaTables());
 }
 
+/** Maps from edit-style InputAction.type to its executor in Commands.ts. */
+const commandFns: Record<string, (s: AppState, c: ConsoleConnection) => Promise<void>> = {
+  save_edit: executeSaveEdit,
+  add_row: executeAddRow,
+  delete_row: executeDeleteRow,
+};
+
 /**
  * Main entry point for the console client.
  */
@@ -201,42 +208,24 @@ export async function consoleMain(options: {
           doRender(state);
           break;
         case "save_edit":
-          await executeSaveEdit(state, conn);
-          applyAllSectionLinks(state, conn);
-          doRender(state);
-          break;
         case "add_row":
-          await executeAddRow(state, conn);
-          applyAllSectionLinks(state, conn);
-          doRender(state);
-          break;
         case "delete_row":
-          await executeDeleteRow(state, conn);
+          await commandFns[action.type](state, conn);
           applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         case "switch_to_tables":
-          state.mode = "table_picker";
-          clearViewState(state);
-          state.statusMessage = "";
-          doRender(state);
-          break;
         case "switch_to_pages":
-          state.mode = "page_picker";
+          state.mode = action.type === "switch_to_tables" ? "table_picker" : "page_picker";
           clearViewState(state);
           state.statusMessage = "";
           doRender(state);
           break;
-        case "focus_next_pane": {
-          cyclePane(state, 1);
+        case "focus_next_pane":
+        case "focus_prev_pane":
+          cyclePane(state, action.type === "focus_next_pane" ? 1 : -1);
           doRender(state);
           break;
-        }
-        case "focus_prev_pane": {
-          cyclePane(state, -1);
-          doRender(state);
-          break;
-        }
         case "view_cell": {
           const pane = activeView(state);
           if (pane && pane.cursorCol < pane.columns.length) {
