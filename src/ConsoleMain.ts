@@ -1,6 +1,7 @@
 import { BulkColValues, ColumnInfo, DocAction } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
-import { AppState, PaneState, createInitialState, render, showCursor, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleRenderer.js";
+import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
+import { render, showCursor, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ConsoleRenderer.js";
 import {
   executeAddRow, executeDeleteRow, executeSaveEdit, handleKeypress
 } from "./ConsoleInput.js";
@@ -89,9 +90,7 @@ export async function consoleMain(options: {
   // Set up live update handler (server pushes docUserAction messages over WebSocket)
   conn.onDocAction((actions, actionGroup) => {
     applyDocActions(state, actions);
-    if (state.panes.length > 0) {
-      applyAllSectionLinks(state, conn);
-    }
+    applyAllSectionLinks(state, conn);
     if (actionGroup && actionGroup.fromSelf) {
       handleOwnActionGroup(state, actionGroup);
     }
@@ -119,9 +118,7 @@ export async function consoleMain(options: {
 
     // Handle terminal resize
     process.stdout.on("resize", () => {
-      if (state.panes.length > 0) {
-        recomputeLayout(state);
-      }
+      recomputeLayout(state);
       doRender(state);
     });
 
@@ -147,10 +144,8 @@ export async function consoleMain(options: {
         case "render": {
           // Clear transient status on any navigation/render
           state.statusMessage = "";
-          // After cursor movement in multi-pane mode, re-run linking
-          if (state.panes.length > 0) {
-            applyAllSectionLinks(state, conn);
-          }
+          // After cursor movement, re-run linking (no-op if no panes)
+          applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         }
@@ -189,7 +184,7 @@ export async function consoleMain(options: {
           state.statusMessage = "Refreshing...";
           doRender(state);
           try {
-            if (state.panes.length > 0 && state.currentPageId) {
+            if (state.currentPageId) {
               const page = state.pages.find(p => p.pageId === state.currentPageId);
               if (page) {
                 await loadPage(state, conn, page.viewId);
@@ -205,23 +200,17 @@ export async function consoleMain(options: {
           break;
         case "save_edit":
           await executeSaveEdit(state, conn);
-          if (state.panes.length > 0) {
-            applyAllSectionLinks(state, conn);
-          }
+          applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         case "add_row":
           await executeAddRow(state, conn);
-          if (state.panes.length > 0) {
-            applyAllSectionLinks(state, conn);
-          }
+          applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         case "delete_row":
           await executeDeleteRow(state, conn);
-          if (state.panes.length > 0) {
-            applyAllSectionLinks(state, conn);
-          }
+          applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         case "switch_to_tables":
@@ -251,25 +240,11 @@ export async function consoleMain(options: {
           break;
         }
         case "view_cell": {
-          // Get the current cell's full content
-          let col: ColumnInfo | undefined;
-          let raw: CellValue = null;
-          if (state.panes.length > 0) {
-            const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-            const pane = state.panes[paneIdx];
-            if (pane && pane.cursorCol < pane.columns.length) {
-              col = pane.columns[pane.cursorCol];
-              const values = pane.colValues[col.colId];
-              raw = values ? values[pane.cursorRow] : null;
-            }
-          } else {
-            if (state.cursorCol < state.columns.length) {
-              col = state.columns[state.cursorCol];
-              const values = state.colValues[col.colId];
-              raw = values ? values[state.cursorRow] : null;
-            }
-          }
-          if (col) {
+          const pane = activeView(state);
+          if (pane && pane.cursorCol < pane.columns.length) {
+            const col = pane.columns[pane.cursorCol];
+            const values = pane.colValues[col.colId];
+            const raw = values ? values[pane.cursorRow] : null;
             state.cellViewerContent = formatCellValue(raw, col.type, col.widgetOptions, col.displayValues);
             state.cellViewerScroll = 0;
             state.mode = "cell_viewer";
@@ -291,9 +266,7 @@ export async function consoleMain(options: {
         case "close_overlay":
           state.mode = "grid";
           state.overlayPaneIndex = null;
-          if (state.panes.length > 0) {
-            applyAllSectionLinks(state, conn);
-          }
+          applyAllSectionLinks(state, conn);
           doRender(state);
           break;
         case "cycle_theme": {
@@ -358,14 +331,20 @@ function cyclePane(state: AppState, direction: 1 | -1): void {
 
 async function loadTable(state: AppState, conn: ConsoleConnection): Promise<void> {
   const data = await conn.fetchTable(state.currentTableId);
-  state.columns = data.columns;
-  state.rowIds = data.rowIds;
-  state.colValues = data.colValues;
-  state.cursorRow = 0;
-  state.cursorCol = 0;
-  state.scrollRow = 0;
-  state.scrollCol = 0;
-  await resolveDisplayValues(state.columns, conn);
+  await resolveDisplayValues(data.columns, conn);
+  // Single-table mode = one synthetic pane with no sectionInfo/linking data.
+  state.panes = [{
+    columns: data.columns,
+    rowIds: [...data.rowIds],
+    allRowIds: [...data.rowIds],
+    colValues: data.colValues,
+    allColValues: copyColValues(data.colValues),
+    cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+  }];
+  state.focusedPane = 0;
+  state.layout = null;
+  state.boxSpec = null;
+  state.collapsedPaneIndices = [];
 }
 
 /**
@@ -488,7 +467,8 @@ function recomputeLayout(state: AppState): void {
 
   const sectionIdToPaneIndex = new Map<number, number>();
   for (let i = 0; i < state.panes.length; i++) {
-    sectionIdToPaneIndex.set(state.panes[i].sectionInfo.sectionId, i);
+    const sec = state.panes[i].sectionInfo;
+    if (sec) { sectionIdToPaneIndex.set(sec.sectionId, i); }
   }
 
   const termRows = process.stdout.rows || 24;
@@ -505,8 +485,11 @@ function recomputeLayout(state: AppState): void {
 export function reapplySortAndFilter(pane: PaneState, metaTables: any): void {
   pane.rowIds = [...pane.allRowIds];
   pane.colValues = copyColValues(pane.allColValues);
-  applySectionFilters(pane, pane.sectionInfo.sectionId, metaTables);
-  const spec = pane.sectionInfo.sortColRefs;
+  const sec = pane.sectionInfo;
+  if (sec) {
+    applySectionFilters(pane, sec.sectionId, metaTables);
+  }
+  const spec = sec?.sortColRefs;
   const hasSort = spec && spec !== "[]";
   if (hasSort) {
     applySortSpec(pane, spec, metaTables);
@@ -543,15 +526,17 @@ function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
   }
 
   for (const pane of state.panes) {
-    const srcRef = pane.sectionInfo.linkSrcSectionRef;
+    const sec = pane.sectionInfo;
+    if (!sec) { continue; } // single-pane mode: no linking
+    const srcRef = sec.linkSrcSectionRef;
     if (!srcRef) { continue; }
 
     // Find source pane
-    const srcPane = state.panes.find(p => p.sectionInfo.sectionId === srcRef);
+    const srcPane = state.panes.find(p => p.sectionInfo?.sectionId === srcRef);
     if (!srcPane) { continue; }
 
-    const srcColRef = pane.sectionInfo.linkSrcColRef;
-    const tgtColRef = pane.sectionInfo.linkTargetColRef;
+    const srcColRef = sec.linkSrcColRef;
+    const tgtColRef = sec.linkTargetColRef;
 
     if (srcPane.rowIds.length === 0) {
       // No source rows — show nothing
@@ -913,106 +898,23 @@ function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void
  */
 /**
  * Apply incoming DocActions to local state for live updates.
+ * Routes each action to every pane whose table matches.
  */
 function applyDocActions(state: AppState, actions: DocAction[]): void {
   for (const action of actions) {
     const actionType = action[0];
     const tableId = action[1] as string;
-
-    // In multi-pane mode, route to all matching panes
-    if (state.panes.length > 0) {
-      for (const pane of state.panes) {
-        if (pane.sectionInfo.tableId === tableId) {
-          applyDocActionToPane(pane, action);
-        }
-      }
+    // Schema changes require a refresh; can't update in-place reliably
+    if (actionType === "AddColumn" || actionType === "RemoveColumn" ||
+        actionType === "RenameColumn" || actionType === "ModifyColumn") {
+      state.statusMessage = "Schema changed - press r to refresh";
       continue;
     }
-
-    // Single-pane mode: only apply to current table
-    if (tableId !== state.currentTableId) { continue; }
-
-    switch (actionType) {
-      case "UpdateRecord": {
-        const [, , rowId, colValues] = action as any;
-        const rowIdx = state.rowIds.indexOf(rowId);
-        if (rowIdx === -1) { break; }
-        for (const [colId, value] of Object.entries(colValues)) {
-          if (state.colValues[colId]) {
-            state.colValues[colId][rowIdx] = value as any;
-          }
-        }
-        break;
+    for (const pane of state.panes) {
+      const paneTable = pane.sectionInfo?.tableId || state.currentTableId;
+      if (paneTable === tableId) {
+        applyDocActionToPane(pane, action);
       }
-      case "BulkUpdateRecord": {
-        const [, , rowIds, colValues] = action as any;
-        for (let i = 0; i < rowIds.length; i++) {
-          const rowIdx = state.rowIds.indexOf(rowIds[i]);
-          if (rowIdx === -1) { continue; }
-          for (const [colId, values] of Object.entries(colValues as Record<string, any[]>)) {
-            if (state.colValues[colId]) {
-              state.colValues[colId][rowIdx] = values[i];
-            }
-          }
-        }
-        break;
-      }
-      case "AddRecord": {
-        const [, , rowId, colValues] = action as any;
-        state.rowIds.push(rowId);
-        appendRowToColValues(state.colValues, state.columns, colValues);
-        break;
-      }
-      case "BulkAddRecord": {
-        const [, , rowIds, colValues] = action as any;
-        for (let i = 0; i < rowIds.length; i++) {
-          state.rowIds.push(rowIds[i]);
-          const perRow: Record<string, any> = {};
-          for (const colId of Object.keys(colValues)) {
-            perRow[colId] = colValues[colId]?.[i];
-          }
-          appendRowToColValues(state.colValues, state.columns, perRow);
-        }
-        break;
-      }
-      case "RemoveRecord": {
-        const [, , rowId] = action as any;
-        const rowIdx = state.rowIds.indexOf(rowId);
-        if (rowIdx === -1) { break; }
-        state.rowIds.splice(rowIdx, 1);
-        for (const col of state.columns) {
-          if (state.colValues[col.colId]) {
-            state.colValues[col.colId].splice(rowIdx, 1);
-          }
-        }
-        if (state.cursorRow >= state.rowIds.length && state.cursorRow > 0) {
-          state.cursorRow = state.rowIds.length - 1;
-        }
-        break;
-      }
-      case "BulkRemoveRecord": {
-        const [, , rowIds] = action as any;
-        for (const rowId of rowIds) {
-          const rowIdx = state.rowIds.indexOf(rowId);
-          if (rowIdx === -1) { continue; }
-          state.rowIds.splice(rowIdx, 1);
-          for (const col of state.columns) {
-            if (state.colValues[col.colId]) {
-              state.colValues[col.colId].splice(rowIdx, 1);
-            }
-          }
-        }
-        if (state.cursorRow >= state.rowIds.length && state.cursorRow > 0) {
-          state.cursorRow = state.rowIds.length - 1;
-        }
-        break;
-      }
-      case "AddColumn":
-      case "RemoveColumn":
-      case "RenameColumn":
-      case "ModifyColumn":
-        state.statusMessage = "Schema changed - press r to refresh";
-        break;
     }
   }
 }

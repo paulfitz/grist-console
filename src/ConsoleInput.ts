@@ -1,4 +1,5 @@
-import { AppMode, AppState, isCardPane, PaneState, displayWidth } from "./ConsoleRenderer.js";
+import { AppMode, AppState, isCardPane, PaneState, activeView } from "./ConsoleAppState.js";
+import { displayWidth } from "./ConsoleDisplay.js";
 import { BulkColValues, CellValue, ColumnInfo } from "./types.js";
 import { collectLeaves, LayoutNode } from "./ConsoleLayout.js";
 import { parseCellInput, formatCellValue } from "./ConsoleCellFormat.js";
@@ -62,9 +63,9 @@ function getLeafForPane(state: AppState, paneIndex: number): LayoutNode | undefi
  * For unlinked card panes, returns the pane itself.
  */
 function findCardRecordTarget(state: AppState, pane: PaneState): PaneState {
-  const srcRef = pane.sectionInfo.linkSrcSectionRef;
+  const srcRef = pane.sectionInfo?.linkSrcSectionRef;
   if (!srcRef) { return pane; }
-  const srcPane = state.panes.find(p => p.sectionInfo.sectionId === srcRef);
+  const srcPane = state.panes.find(p => p.sectionInfo?.sectionId === srcRef);
   if (!srcPane) { return pane; }
   // If the source is also a card pane, recurse up the chain
   if (isCardPane(srcPane)) {
@@ -176,109 +177,6 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
     default:
       return { type: "none" };
   }
-}
-
-/**
- * Handle a keypress in grid mode.
- */
-function handleGridKey(key: string, state: AppState): InputAction {
-  const termRows = process.stdout.rows || 24;
-  const pageSize = Math.max(1, termRows - 5);
-
-  switch (key) {
-    case "up":
-      if (state.cursorRow > 0) {
-        state.cursorRow--;
-        if (state.cursorRow < state.scrollRow) {
-          state.scrollRow = state.cursorRow;
-        }
-      }
-      return { type: "render" };
-    case "down":
-      if (state.cursorRow < state.rowIds.length - 1) {
-        state.cursorRow++;
-        const dataRows = Math.max(1, termRows - 5);
-        if (state.cursorRow >= state.scrollRow + dataRows) {
-          state.scrollRow = state.cursorRow - dataRows + 1;
-        }
-      }
-      return { type: "render" };
-    case "left":
-      if (state.cursorCol > 0) {
-        state.cursorCol--;
-        ensureColVisible(state, process.stdout.columns || 80);
-      }
-      return { type: "render" };
-    case "right":
-      if (state.cursorCol < state.columns.length - 1) {
-        state.cursorCol++;
-        ensureColVisible(state, process.stdout.columns || 80);
-      }
-      return { type: "render" };
-    case "pageup":
-      state.cursorRow = Math.max(0, state.cursorRow - pageSize);
-      state.scrollRow = Math.max(0, state.scrollRow - pageSize);
-      return { type: "render" };
-    case "pagedown":
-      state.cursorRow = Math.min(state.rowIds.length - 1, state.cursorRow + pageSize);
-      state.scrollRow = Math.min(
-        Math.max(0, state.rowIds.length - pageSize),
-        state.scrollRow + pageSize
-      );
-      return { type: "render" };
-    case "home":
-      state.cursorRow = 0;
-      state.scrollRow = 0;
-      return { type: "render" };
-    case "end":
-      state.cursorRow = Math.max(0, state.rowIds.length - 1);
-      state.scrollRow = Math.max(0, state.rowIds.length - pageSize);
-      return { type: "render" };
-    case "enter":
-      if (state.rowIds.length > 0 && state.columns.length > 0) {
-        enterEditMode(state);
-      }
-      return { type: "render" };
-    case "a":
-      return { type: "add_row" };
-    case "d":
-      if (state.rowIds.length > 0) {
-        state.mode = "confirm_delete";
-      }
-      return { type: "render" };
-    case "v":
-      return { type: "view_cell" };
-    case "u":
-      return { type: "undo" };
-    case "U":
-      return { type: "redo" };
-    case "escape":
-    case "p":
-      if (state.pages.length > 0) {
-        return { type: "switch_to_pages" };
-      }
-      return { type: "switch_to_tables" };
-    case "r":
-      return { type: "refresh" };
-    case "t":
-      return { type: "switch_to_tables" };
-    case "T":
-      return { type: "cycle_theme" };
-    case "q":
-    case "ctrl-c":
-      return { type: "quit" };
-    default:
-      return { type: "none" };
-  }
-}
-
-function enterEditMode(state: AppState): void {
-  const col = state.columns[state.cursorCol];
-  const values = state.colValues[col.colId];
-  const currentValue = values ? values[state.cursorRow] : null;
-  state.editValue = formatCellValue(currentValue, col.type, col.widgetOptions, col.displayValues);
-  state.editCursorPos = state.editValue.length;
-  state.mode = "editing";
 }
 
 /**
@@ -679,14 +577,9 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
       }
       // Enter edit mode -- keep cellViewerContent so we stay in the viewer
       state.cellViewerLinkIndex = -1;
-      if (state.panes.length > 0) {
-        const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-        const pane = state.panes[paneIdx];
-        if (pane && pane.rowIds.length > 0 && pane.columns.length > 0) {
-          enterPaneEditMode(state, pane);
-        }
-      } else if (state.rowIds.length > 0 && state.columns.length > 0) {
-        enterEditMode(state);
+      const pane = activeView(state);
+      if (pane && pane.rowIds.length > 0 && pane.columns.length > 0) {
+        enterPaneEditMode(state, pane);
       }
       return { type: "render" };
     }
@@ -818,10 +711,7 @@ export function handleKeypress(buf: Buffer, state: AppState): InputAction {
     case "page_picker":
       return handlePagePickerKey(key, state);
     case "grid":
-      if (state.panes.length > 0) {
-        return handleMultiPaneGridKey(key, state);
-      }
-      return handleGridKey(key, state);
+      return handleMultiPaneGridKey(key, state);
     case "editing":
       return handleEditKey(key, state);
     case "confirm_delete":
@@ -839,21 +729,11 @@ export function handleKeypress(buf: Buffer, state: AppState): InputAction {
  * Execute a save_edit action: send the edit to the server.
  */
 export async function executeSaveEdit(state: AppState, conn: ConsoleConnection): Promise<void> {
-  let tableId: string;
-  let col: { colId: string; type: string };
-  let rowId: number;
-
-  if (state.panes.length > 0) {
-    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-    const pane = state.panes[paneIdx];
-    tableId = pane.sectionInfo.tableId;
-    col = pane.columns[pane.cursorCol];
-    rowId = pane.rowIds[pane.cursorRow];
-  } else {
-    tableId = state.currentTableId;
-    col = state.columns[state.cursorCol];
-    rowId = state.rowIds[state.cursorRow];
-  }
+  const pane = activeView(state);
+  if (!pane) { return; }
+  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const col = pane.columns[pane.cursorCol];
+  const rowId = pane.rowIds[pane.cursorRow];
 
   const parsed = parseCellInput(state.editValue, col.type);
   try {
@@ -876,17 +756,10 @@ export async function executeSaveEdit(state: AppState, conn: ConsoleConnection):
  * Execute an add_row action.
  */
 export async function executeAddRow(state: AppState, conn: ConsoleConnection): Promise<void> {
-  let tableId: string;
-  let manualSort: number | undefined;
-  if (state.panes.length > 0) {
-    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-    const pane = state.panes[paneIdx];
-    tableId = pane.sectionInfo.tableId;
-    manualSort = computeInsertManualSort(pane.colValues.manualSort, pane.cursorRow, pane.rowIds.length);
-  } else {
-    tableId = state.currentTableId;
-    manualSort = computeInsertManualSort(state.colValues.manualSort, state.cursorRow, state.rowIds.length);
-  }
+  const pane = activeView(state);
+  if (!pane) { return; }
+  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const manualSort = computeInsertManualSort(pane.colValues.manualSort, pane.cursorRow, pane.rowIds.length);
   try {
     const payload: Record<string, any> = {};
     if (manualSort !== undefined) { payload.manualSort = manualSort; }
@@ -923,37 +796,18 @@ export function computeInsertManualSort(
  * Execute a delete_row action.
  */
 export async function executeDeleteRow(state: AppState, conn: ConsoleConnection): Promise<void> {
-  let tableId: string;
-  let rowId: number;
-  let cursorRow: number;
-  let rowIds: number[];
-
-  if (state.panes.length > 0) {
-    const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-    const pane = state.panes[paneIdx];
-    tableId = pane.sectionInfo.tableId;
-    rowId = pane.rowIds[pane.cursorRow];
-    cursorRow = pane.cursorRow;
-    rowIds = pane.rowIds;
-  } else {
-    tableId = state.currentTableId;
-    rowId = state.rowIds[state.cursorRow];
-    cursorRow = state.cursorRow;
-    rowIds = state.rowIds;
-  }
+  const pane = activeView(state);
+  if (!pane) { return; }
+  const tableId = pane.sectionInfo?.tableId || state.currentTableId;
+  const rowId = pane.rowIds[pane.cursorRow];
 
   try {
     await conn.applyUserActions([
       ["RemoveRecord", tableId, rowId],
     ]);
     state.statusMessage = `Row ${rowId} deleted`;
-    if (cursorRow >= rowIds.length - 1 && cursorRow > 0) {
-      if (state.panes.length > 0) {
-        const paneIdx = state.overlayPaneIndex ?? state.focusedPane;
-        state.panes[paneIdx].cursorRow--;
-      } else {
-        state.cursorRow--;
-      }
+    if (pane.cursorRow >= pane.rowIds.length - 1 && pane.cursorRow > 0) {
+      pane.cursorRow--;
     }
   } catch (e: any) {
     state.statusMessage = `Error: ${e.message}`;

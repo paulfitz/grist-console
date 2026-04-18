@@ -24,7 +24,7 @@ function screenPreamble(t: Theme): string {
 }
 
 export { AppMode, AppState, PaneState, createInitialState, isCardPane } from "./ConsoleAppState.js";
-import { AppMode, AppState, PaneState, isCardPane } from "./ConsoleAppState.js";
+import { AppMode, AppState, PaneState, isCardPane, activeView } from "./ConsoleAppState.js";
 
 interface ColLayout {
   colId: string;
@@ -35,12 +35,12 @@ interface ColLayout {
 /**
  * Compute column widths based on header labels and sampled data.
  */
-function computeColLayout(state: AppState): ColLayout[] {
+function computeColLayout(pane: PaneState): ColLayout[] {
   const maxWidth = 30;
   const minWidth = 4;
-  return state.columns.map((col) => {
+  return pane.columns.map((col) => {
     let width = displayWidth(col.label);
-    const values = state.colValues[col.colId];
+    const values = pane.colValues[col.colId];
     if (values) {
       const sampleSize = Math.min(values.length, 100);
       for (let i = 0; i < sampleSize; i++) {
@@ -61,37 +61,12 @@ function getStatusLine(state: AppState, termCols: number): string {
   if (state.statusMessage) { return state.statusMessage; }
   if (state.mode === "editing") { return ""; }
 
-  // Get the current pane and cursor
-  let columns: ColumnInfo[];
-  let colValues: BulkColValues;
-  let cursorRow: number;
-  let cursorCol: number;
-
-  if (state.mode === "overlay" && state.overlayPaneIndex !== null) {
-    const pane = state.panes[state.overlayPaneIndex];
-    if (!pane) { return ""; }
-    columns = pane.columns;
-    colValues = pane.colValues;
-    cursorRow = pane.cursorRow;
-    cursorCol = pane.cursorCol;
-  } else if (state.panes.length > 0) {
-    const pane = state.panes[state.focusedPane];
-    if (!pane) { return ""; }
-    columns = pane.columns;
-    colValues = pane.colValues;
-    cursorRow = pane.cursorRow;
-    cursorCol = pane.cursorCol;
-  } else {
-    columns = state.columns;
-    colValues = state.colValues;
-    cursorRow = state.cursorRow;
-    cursorCol = state.cursorCol;
-  }
-
-  if (cursorCol >= columns.length) { return ""; }
-  const col = columns[cursorCol];
-  const values = colValues[col.colId];
-  const raw = values ? values[cursorRow] : null;
+  const pane = activeView(state);
+  if (!pane) { return ""; }
+  if (pane.cursorCol >= pane.columns.length) { return ""; }
+  const col = pane.columns[pane.cursorCol];
+  const values = pane.colValues[col.colId];
+  const raw = values ? values[pane.cursorRow] : null;
   if (raw === null || raw === undefined) { return ""; }
   const full = flattenToLine(formatCellValue(raw, col.type, col.widgetOptions, col.displayValues));
   // Only show if it would be truncated (longer than typical column width)
@@ -262,28 +237,32 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
 
 function renderGrid(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
+  const pane = state.panes[state.focusedPane];
+  if (!pane) {
+    // Nothing loaded yet; just clear the screen with a minimal preamble.
+    return screenPreamble(t) + CLEAR_LINE;
+  }
   const lines: string[] = [];
-  const layout = computeColLayout(state);
-  const maxRowId = state.rowIds.length > 0 ? Math.max(...state.rowIds) : 0;
+  const layout = computeColLayout(pane);
+  const maxRowId = pane.rowIds.length > 0 ? Math.max(...pane.rowIds) : 0;
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
   // Determine visible columns based on scrollCol and terminal width
   let availWidth = termCols - rowNumWidth;
   const visibleCols: number[] = [];
-  for (let c = state.scrollCol; c < layout.length; c++) {
+  for (let c = pane.scrollCol; c < layout.length; c++) {
     const needed = layout[c].width + t.colSeparator.length;
     if (needed > availWidth) { break; }
     visibleCols.push(c);
     availWidth -= needed;
   }
 
-  // Determine visible rows
   const headerRows = t.headerSepLine ? 3 : 2; // title, headers, [separator]
   const footerRows = 2; // help, status
   const dataRows = Math.max(1, termRows - headerRows - footerRows);
 
   // Title bar
-  const rowCount = state.rowIds.length;
+  const rowCount = pane.rowIds.length;
   const detail = `(${rowCount} ${rowCount === 1 ? "row" : "rows"})`;
   const title = t.titleFormat(state.currentTableId, detail);
   lines.push(t.titleBar(padRight(title, termCols)));
@@ -306,21 +285,21 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
 
   // Data rows
   for (let r = 0; r < dataRows; r++) {
-    const rowIdx = state.scrollRow + r;
-    if (rowIdx >= state.rowIds.length) {
+    const rowIdx = pane.scrollRow + r;
+    if (rowIdx >= pane.rowIds.length) {
       lines.push("");
       continue;
     }
-    const rowId = state.rowIds[rowIdx];
+    const rowId = pane.rowIds[rowIdx];
     let line = t.rowNumber(padLeft(String(rowId), rowNumWidth));
     for (const ci of visibleCols) {
       const col = layout[ci];
-      const colType = state.columns[ci]?.type || "Text";
-      const values = state.colValues[col.colId];
+      const colType = pane.columns[ci]?.type || "Text";
+      const values = pane.colValues[col.colId];
       const raw = values ? values[rowIdx] : null;
-      const plainText = truncate(flattenToLine(formatCellValue(raw, colType, state.columns[ci]?.widgetOptions, state.columns[ci]?.displayValues)), col.width);
+      const plainText = truncate(flattenToLine(formatCellValue(raw, colType, pane.columns[ci]?.widgetOptions, pane.columns[ci]?.displayValues)), col.width);
       const padFn = isNumericType(colType) ? padLeft : padRight;
-      const isCurrentCell = (rowIdx === state.cursorRow && ci === state.cursorCol);
+      const isCurrentCell = (rowIdx === pane.cursorRow && ci === pane.cursorCol);
 
       if (state.mode === "editing" && isCurrentCell) {
         const { text: editDisplay } = editWindow(state.editValue, state.editCursorPos, col.width);
@@ -328,7 +307,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
       } else if (isCurrentCell) {
         line += t.colSeparator + t.cursor(padFn(plainText, col.width));
       } else {
-        const colored = applyChoiceColor(plainText, raw, colType, state.columns[ci]?.widgetOptions);
+        const colored = applyChoiceColor(plainText, raw, colType, pane.columns[ci]?.widgetOptions);
         line += t.colSeparator + padFn(colored, col.width);
       }
     }
@@ -344,7 +323,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   if (state.mode === "editing") {
     lines.push(t.helpBar("Type to edit  Enter:save  Esc:cancel"));
   } else if (state.mode === "confirm_delete") {
-    lines.push(t.helpBar(`Delete row ${state.rowIds[state.cursorRow]}? y:confirm  n/Esc:cancel`));
+    lines.push(t.helpBar(`Delete row ${pane.rowIds[pane.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
     const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
     lines.push(t.helpBar(`\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  u:undo  t:tables${pagesHint}  T:theme  q:quit`));
@@ -357,14 +336,13 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
 
   // Show terminal cursor at edit position when editing
   if (state.mode === "editing" && !state.cellViewerContent) {
-    const headerRows = t.headerSepLine ? 3 : 2;
-    const editRow = headerRows + (state.cursorRow - state.scrollRow);
+    const editRow = headerRows + (pane.cursorRow - pane.scrollRow);
     let editCol = rowNumWidth + t.colSeparator.length;
     for (const ci of visibleCols) {
-      if (ci === state.cursorCol) { break; }
+      if (ci === pane.cursorCol) { break; }
       editCol += layout[ci].width + t.colSeparator.length;
     }
-    const colWidth = layout[state.cursorCol]?.width || 0;
+    const colWidth = layout[pane.cursorCol]?.width || 0;
     const { cursorOffset } = editWindow(state.editValue, state.editCursorPos, colWidth);
     editCol += cursorOffset;
     result += SHOW_CURSOR + MOVE_TO(editRow, editCol);
@@ -499,7 +477,7 @@ function renderCollapsedTray(state: AppState, termCols: number): string {
     const paneIdx = state.collapsedPaneIndices[i];
     const pane = state.panes[paneIdx];
     if (!pane) { continue; }
-    const name = pane.sectionInfo.title || pane.sectionInfo.tableId;
+    const name = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
     const label = ` ${i + 1}:${name} `;
     tray += t.titleBar(label) + " ";
   }
@@ -568,7 +546,7 @@ function renderPaneInto(
   const { top, left, width, height } = leaf;
   if (width < 3 || height < 2) { return; }
 
-  const pk = pane.sectionInfo.parentKey;
+  const pk = pane.sectionInfo?.parentKey;
   if (pk === "single" || pk === "detail") {
     renderCardPaneInto(buf, leaf, pane, isFocused, mode, editValue, editCursorPos, t);
     return;
@@ -583,7 +561,7 @@ function renderPaneInto(
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
   // Title bar (row 0)
-  const tableName = pane.sectionInfo.title || pane.sectionInfo.tableId;
+  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
   const rowCount = pane.rowIds.length;
   const titleText = ` ${tableName} (${rowCount}) `;
   const titleLine = truncate(titleText, width);
@@ -666,7 +644,7 @@ function renderCardPaneInto(
   const { top, left, width, height } = leaf;
 
   // Title bar (row 0)
-  const tableName = pane.sectionInfo.title || pane.sectionInfo.tableId;
+  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
   const rowCount = pane.rowIds.length;
   const recNum = rowCount > 0 ? pane.cursorRow + 1 : 0;
   const titleText = ` ${tableName} (${recNum}/${rowCount}) `;
@@ -721,7 +699,7 @@ function renderChartPlaceholder(
 ): void {
   const { top, left, width, height } = leaf;
 
-  const tableName = pane.sectionInfo.title || pane.sectionInfo.tableId;
+  const tableName = pane.sectionInfo?.title || pane.sectionInfo?.tableId || "";
   const titleText = ` ${tableName} [chart] `;
   const titleLine = truncate(titleText, width);
   const titleStyled = isFocused

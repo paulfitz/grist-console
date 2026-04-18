@@ -17,8 +17,13 @@ export type AppMode =
   | "overlay"
   | "cell_viewer";
 
+/**
+ * A view of one section's data. Used for both multi-pane page layouts and
+ * single-table grid mode. In single-table mode, `sectionInfo` is absent and
+ * `allRowIds` / `allColValues` (the link-linking "master" copies) are unused.
+ */
 export interface PaneState {
-  sectionInfo: SectionInfo;
+  sectionInfo?: SectionInfo;
   columns: ColumnInfo[];
   rowIds: number[];
   allRowIds: number[];
@@ -35,18 +40,15 @@ export interface AppState {
   tableIds: string[];
   selectedTableIndex: number;
   currentTableId: string;
-  columns: ColumnInfo[];
-  rowIds: number[];
-  colValues: BulkColValues;
-  cursorRow: number;
-  cursorCol: number;
-  scrollRow: number;
-  scrollCol: number;
+  // Edit buffer (shared between single-pane and multi-pane edit modes).
   editValue: string;
   editCursorPos: number;
   statusMessage: string;
   docId: string;
-  // Multi-pane page layout state
+  // View state. `panes` is the data source of truth for both single-table
+  // mode (one synthetic pane, no sectionInfo) and multi-section pages
+  // (multiple PaneStates). `focusedPane` indexes `panes`; `layout` describes
+  // how they're arranged on screen.
   pages: PageInfo[];
   selectedPageIndex: number;
   currentPageId: number;
@@ -75,13 +77,6 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     tableIds: [],
     selectedTableIndex: 0,
     currentTableId: "",
-    columns: [],
-    rowIds: [],
-    colValues: {},
-    cursorRow: 0,
-    cursorCol: 0,
-    scrollRow: 0,
-    scrollCol: 0,
     editValue: "",
     editCursorPos: 0,
     statusMessage: "",
@@ -105,6 +100,18 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
 }
 
 export function isCardPane(pane: PaneState): boolean {
-  const pk = pane.sectionInfo.parentKey;
+  const pk = pane.sectionInfo?.parentKey;
   return pk === "single" || pk === "detail";
+}
+
+/**
+ * Return the pane the user is currently interacting with: the overlay pane
+ * if one is open, else the focused pane. Returns undefined only if there
+ * are no panes (e.g. picker modes before data loads).
+ */
+export function activeView(state: AppState): PaneState | undefined {
+  if (state.overlayPaneIndex !== null && state.panes[state.overlayPaneIndex]) {
+    return state.panes[state.overlayPaneIndex];
+  }
+  return state.panes[state.focusedPane];
 }

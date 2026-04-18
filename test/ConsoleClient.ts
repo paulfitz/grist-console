@@ -193,15 +193,18 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       state.currentTableId = "People";
-      state.columns = [
-        { colId: "Name", type: "Text", label: "Name" },
-        { colId: "Age", type: "Int", label: "Age" },
-      ];
-      state.rowIds = [1, 2];
-      state.colValues = {
-        Name: ["Alice", "Bob"],
-        Age: [30, 25],
-      };
+      state.panes = [{
+        columns: [
+          { colId: "Name", type: "Text", label: "Name" },
+          { colId: "Age", type: "Int", label: "Age" },
+        ],
+        rowIds: [1, 2],
+        allRowIds: [1, 2],
+        colValues: { Name: ["Alice", "Bob"], Age: [30, 25] },
+        allColValues: { Name: ["Alice", "Bob"], Age: [30, 25] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      }];
+      state.focusedPane = 0;
       const output = render(state);
       assert.include(output, "People");
       assert.include(output, "2 rows");
@@ -215,11 +218,15 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       state.currentTableId = "Empty";
-      state.columns = [
-        { colId: "A", type: "Text", label: "A" },
-      ];
-      state.rowIds = [];
-      state.colValues = { A: [] };
+      state.panes = [{
+        columns: [{ colId: "A", type: "Text", label: "A" }],
+        rowIds: [],
+        allRowIds: [],
+        colValues: { A: [] },
+        allColValues: { A: [] },
+        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
+      }];
+      state.focusedPane = 0;
       const output = render(state);
       assert.include(output, "Empty");
       assert.include(output, "0 rows");

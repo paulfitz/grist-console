@@ -117,12 +117,8 @@ function collectUnprobedChars(state: AppState): string[] {
       }
     }
   };
-  if (state.panes.length > 0) {
-    for (const pane of state.panes) {
-      collectFrom(pane.colValues, pane.rowIds, pane.columns);
-    }
-  } else {
-    collectFrom(state.colValues, state.rowIds, state.columns);
+  for (const pane of state.panes) {
+    collectFrom(pane.colValues, pane.rowIds, pane.columns);
   }
   return [...seen];
 }
