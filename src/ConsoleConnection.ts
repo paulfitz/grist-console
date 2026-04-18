@@ -34,6 +34,7 @@ export class ConsoleConnection {
   private _docFD: number = 0;
   private _pending: Map<number, { resolve: (v: GristResponse) => void, reject: (e: Error) => void, timer: ReturnType<typeof setTimeout> }> = new Map();
   private _onDocAction: DocActionCallback | null = null;
+  private _onClientConnect: (() => void) | null = null;
   private _serverUrl: string;
   private _docId: string;
   private _apiKey: string | undefined;
@@ -94,9 +95,7 @@ export class ConsoleConnection {
     const fullUrl = `${wsUrl}?clientId=console-${Date.now()}&counter=0&newClient=1&browserSettings=${
       encodeURIComponent(JSON.stringify({}))}`;
 
-    const wsHeaders: Record<string, string> = {};
-    if (cookie) { wsHeaders.Cookie = cookie; }
-    if (this._apiKey) { wsHeaders.Authorization = `Bearer ${this._apiKey}`; }
+    const wsHeaders = this._authHeaders(cookie);
     this._log(`websocket: ${wsUrl}`);
     this._log(`headers: ${Object.keys(wsHeaders).join(", ") || "(none)"}`);
 
@@ -267,43 +266,19 @@ export class ConsoleConnection {
     // Find the table's ref
     const tableIds: string[] = tablesData[3].tableId;
     const tableRefs: number[] = tablesData[2];
-    let tableRef = -1;
-    for (let i = 0; i < tableIds.length; i++) {
-      if (tableIds[i] === tableId) {
-        tableRef = tableRefs[i];
-        break;
-      }
-    }
-    if (tableRef === -1) { return []; }
+    const tableRef = tableRefs[tableIds.indexOf(tableId)];
+    if (tableRef === undefined) { return []; }
 
-    // Find columns for this table
+    // Collect column refs whose parent is this table, then resolve each
+    // through the shared getColumnInfo helper for consistent parsing.
+    const colRefs: number[] = columnsData[2];
     const colParentIds: number[] = columnsData[3].parentId;
-    const colIds: string[] = columnsData[3].colId;
-    const colTypes: string[] = columnsData[3].type;
-    const colLabels: string[] = columnsData[3].label;
-    const colWidgetOptions: string[] = columnsData[3].widgetOptions || [];
-    const colVisibleCols: number[] = columnsData[3].visibleCol || [];
-
     const columns: ColumnInfo[] = [];
     for (let i = 0; i < colParentIds.length; i++) {
-      if (colParentIds[i] === tableRef) {
-        const colId = colIds[i];
-        if (!isHiddenCol(colId)) {
-          let widgetOptions: Record<string, any> | undefined;
-          try {
-            if (colWidgetOptions[i]) {
-              widgetOptions = JSON.parse(colWidgetOptions[i]);
-            }
-          } catch { /* ignore invalid JSON */ }
-          const visibleCol = colVisibleCols[i];
-          columns.push({
-            colId,
-            type: colTypes[i],
-            label: colLabels[i] || colId,
-            widgetOptions,
-            visibleCol: visibleCol && visibleCol > 0 ? visibleCol : undefined,
-          });
-        }
+      if (colParentIds[i] !== tableRef) { continue; }
+      const info = getColumnInfo(this._metaTables, colRefs[i]);
+      if (info && !isHiddenCol(info.colId)) {
+        columns.push(info);
       }
     }
     return columns;
@@ -403,15 +378,10 @@ export class ConsoleConnection {
   private _waitForClientConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timeout waiting for clientConnect")), 10000);
-      this._ws!.onmessage = (event: WS.MessageEvent) => {
-        const msg = JSON.parse(String(event.data));
-        if (msg.type === "clientConnect") {
-          clearTimeout(timeout);
-          this._ws!.onmessage = (ev: WS.MessageEvent) => {
-            this._handleMessage(String(ev.data));
-          };
-          resolve();
-        }
+      this._onClientConnect = () => {
+        clearTimeout(timeout);
+        this._onClientConnect = null;
+        resolve();
       };
     });
   }
@@ -423,6 +393,10 @@ export class ConsoleConnection {
       clearTimeout(p.timer);
       this._pending.delete(msg.reqId);
       p.resolve(msg);
+      return;
+    }
+    if (msg.type === "clientConnect" && this._onClientConnect) {
+      this._onClientConnect();
       return;
     }
     if (msg.type === "docUserAction" && msg.data?.docActions) {
