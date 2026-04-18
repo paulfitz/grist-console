@@ -17,7 +17,7 @@ import { LayoutNode, collectLeaves } from "./ConsoleLayout.js";
 import { Theme } from "./ConsoleTheme.js";
 import { AppMode, AppState, PaneState, isCardPane, paneTitle } from "./ConsoleAppState.js";
 import {
-  HIDE_CURSOR, SHOW_CURSOR, MOVE_TO,
+  HIDE_CURSOR, SHOW_CURSOR, MOVE_TO, CLEAR_LINE,
   displayWidth, flattenToLine, truncate, padRight, padLeft, stripAnsi,
   applyChoiceColor, editWindow,
 } from "./ConsoleDisplay.js";
@@ -69,22 +69,25 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
     output += MOVE_TO(r + trayHeight, 0) + buf[r].join("");
   }
 
-  // Footer: help and status
+  // Footer: help and status. Each line ends with CLEAR_LINE so shorter
+  // content doesn't leave stale trailing chars from the previous render
+  // (e.g. "Theme: matrix" -> "Theme: c64" leaving "rix" behind).
   const footerRow = termRows - 2;
   if (state.mode === "editing") {
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar("Type to edit  Enter:save  Esc:cancel");
+      t.helpBar("Type to edit  Enter:save  Esc:cancel") + CLEAR_LINE;
   } else if (state.mode === "confirm_delete") {
     const pane = state.panes[state.focusedPane];
     const rowId = pane ? pane.rowIds[pane.cursorRow] : "?";
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`);
+      t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`) + CLEAR_LINE;
   } else {
     const collapsedHint = hasCollapsed ? "  1-9:widget" : "";
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  u:undo  p:pages${collapsedHint}  T:theme  q:quit`);
+      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  u:undo  p:pages${collapsedHint}  T:theme  q:quit`) +
+      CLEAR_LINE;
   }
-  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
+  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
 
   // Show terminal cursor at edit position when editing in a grid pane
   if (state.mode === "editing" && !state.cellViewerContent) {
@@ -141,12 +144,13 @@ function renderOverlay(
   const footerRow = termRows - 2;
   if (state.mode === "editing") {
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar("Type to edit  Enter:save  Esc:cancel");
+      t.helpBar("Type to edit  Enter:save  Esc:cancel") + CLEAR_LINE;
   } else {
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  Esc:close  a:add  d:del");
+      t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  Esc:close  a:add  d:del") +
+      CLEAR_LINE;
   }
-  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols);
+  output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
 
   // Show terminal cursor when editing in overlay
   if (state.mode === "editing" && !state.cellViewerContent && !isCardPane(pane)) {
