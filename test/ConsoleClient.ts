@@ -19,6 +19,35 @@ import { GristObjCode } from "../src/types.js";
 
 import { assert } from "chai";
 
+/**
+ * Build a PaneState with sensible defaults: cursor at (0,0), no scroll,
+ * and `allRowIds` / `allColValues` mirroring `rowIds` / `colValues` (so the
+ * pane represents an unfiltered view of the same data).
+ */
+function makePane(opts: {
+  columns: Array<{ colId: string; type: string; label: string; widgetOptions?: any; visibleCol?: number; displayValues?: Map<number, string> }>;
+  rowIds: number[];
+  colValues: Record<string, any[]>;
+  sectionInfo?: any;
+  cursorRow?: number;
+  cursorCol?: number;
+  scrollRow?: number;
+  scrollCol?: number;
+}): PaneState {
+  return {
+    sectionInfo: opts.sectionInfo,
+    columns: opts.columns,
+    rowIds: [...opts.rowIds],
+    allRowIds: [...opts.rowIds],
+    colValues: Object.fromEntries(Object.entries(opts.colValues).map(([k, v]) => [k, [...v]])),
+    allColValues: Object.fromEntries(Object.entries(opts.colValues).map(([k, v]) => [k, [...v]])),
+    cursorRow: opts.cursorRow ?? 0,
+    cursorCol: opts.cursorCol ?? 0,
+    scrollRow: opts.scrollRow ?? 0,
+    scrollCol: opts.scrollCol ?? 0,
+  };
+}
+
 describe("ConsoleClient", function() {
   this.timeout(30000);
 
@@ -197,17 +226,14 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       state.currentTableId = "People";
-      state.panes = [{
+      state.panes = [makePane({
         columns: [
           { colId: "Name", type: "Text", label: "Name" },
           { colId: "Age", type: "Int", label: "Age" },
         ],
         rowIds: [1, 2],
-        allRowIds: [1, 2],
         colValues: { Name: ["Alice", "Bob"], Age: [30, 25] },
-        allColValues: { Name: ["Alice", "Bob"], Age: [30, 25] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      }];
+      })];
       state.focusedPane = 0;
       const output = render(state);
       assert.include(output, "People");
@@ -222,14 +248,11 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       state.currentTableId = "Empty";
-      state.panes = [{
+      state.panes = [makePane({
         columns: [{ colId: "A", type: "Text", label: "A" }],
         rowIds: [],
-        allRowIds: [],
         colValues: { A: [] },
-        allColValues: { A: [] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      }];
+      })];
       state.focusedPane = 0;
       const output = render(state);
       assert.include(output, "Empty");
@@ -569,36 +592,26 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       state.panes = [
-        {
+        makePane({
           sectionInfo: {
             sectionId: 1, tableRef: 1, tableId: "People", parentKey: "record",
             title: "People",
             linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
           },
-          columns: [
-            { colId: "Name", type: "Text", label: "Name" },
-          ],
+          columns: [{ colId: "Name", type: "Text", label: "Name" }],
           rowIds: [1, 2],
-          allRowIds: [1, 2],
           colValues: { Name: ["Alice", "Bob"] },
-          allColValues: { Name: ["Alice", "Bob"] },
-          cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-        },
-        {
+        }),
+        makePane({
           sectionInfo: {
             sectionId: 2, tableRef: 2, tableId: "Projects", parentKey: "record",
             title: "Projects",
             linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
           },
-          columns: [
-            { colId: "Title", type: "Text", label: "Title" },
-          ],
+          columns: [{ colId: "Title", type: "Text", label: "Title" }],
           rowIds: [1],
-          allRowIds: [1],
           colValues: { Title: ["Alpha"] },
-          allColValues: { Title: ["Alpha"] },
-          cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-        },
+        }),
       ];
       state.focusedPane = 0;
       // Build a simple vertical layout
@@ -622,7 +635,7 @@ describe("ConsoleClient", function() {
     function makeCardState(): { state: ReturnType<typeof createInitialState>; pane: PaneState } {
       const state = createInitialState("testDoc");
       state.mode = "grid";
-      const pane: PaneState = {
+      const pane = makePane({
         sectionInfo: {
           sectionId: 1, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
@@ -634,19 +647,12 @@ describe("ConsoleClient", function() {
           { colId: "Age", type: "Int", label: "Age" },
         ],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: {
           Name: ["Rex", "Buddy", "Max"],
           Breed: ["Labrador", "Poodle", "Beagle"],
           Age: [3, 5, 2],
         },
-        allColValues: {
-          Name: ["Rex", "Buddy", "Max"],
-          Breed: ["Labrador", "Poodle", "Beagle"],
-          Age: [3, 5, 2],
-        },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+      });
       state.panes = [pane];
       state.focusedPane = 0;
       state.layout = {
@@ -735,23 +741,18 @@ describe("ConsoleClient", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
       // Grid pane (source)
-      const gridPane: PaneState = {
+      const gridPane = makePane({
         sectionInfo: {
           sectionId: 10, tableRef: 1, tableId: "Dogs", parentKey: "record",
           title: "Dogs",
           linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
-        columns: [
-          { colId: "Name", type: "Text", label: "Name" },
-        ],
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: { Name: ["Rex", "Buddy", "Max"] },
-        allColValues: { Name: ["Rex", "Buddy", "Max"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+      });
       // Card pane (linked to grid via cursor sync)
-      const cardPane: PaneState = {
+      const cardPane = makePane({
         sectionInfo: {
           sectionId: 20, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
@@ -762,11 +763,8 @@ describe("ConsoleClient", function() {
           { colId: "Breed", type: "Text", label: "Breed" },
         ],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: { Name: ["Rex", "Buddy", "Max"], Breed: ["Lab", "Poodle", "Beagle"] },
-        allColValues: { Name: ["Rex", "Buddy", "Max"], Breed: ["Lab", "Poodle", "Beagle"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+      });
       state.panes = [gridPane, cardPane];
       state.focusedPane = 1; // Focus on card pane
       state.layout = {
@@ -789,7 +787,7 @@ describe("ConsoleClient", function() {
     it("left arrow in linked card pane moves source pane cursor back", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
-      const gridPane: PaneState = {
+      const gridPane = makePane({
         sectionInfo: {
           sectionId: 10, tableRef: 1, tableId: "Dogs", parentKey: "record",
           title: "Dogs",
@@ -797,12 +795,10 @@ describe("ConsoleClient", function() {
         },
         columns: [{ colId: "Name", type: "Text", label: "Name" }],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: { Name: ["Rex", "Buddy", "Max"] },
-        allColValues: { Name: ["Rex", "Buddy", "Max"] },
-        cursorRow: 2, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-      const cardPane: PaneState = {
+        cursorRow: 2,
+      });
+      const cardPane = makePane({
         sectionInfo: {
           sectionId: 20, tableRef: 1, tableId: "Dogs", parentKey: "single",
           title: "Dog Card",
@@ -810,11 +806,9 @@ describe("ConsoleClient", function() {
         },
         columns: [{ colId: "Name", type: "Text", label: "Name" }],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: { Name: ["Rex", "Buddy", "Max"] },
-        allColValues: { Name: ["Rex", "Buddy", "Max"] },
-        cursorRow: 2, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+        cursorRow: 2,
+      });
       state.panes = [gridPane, cardPane];
       state.focusedPane = 1;
       state.layout = {
@@ -833,17 +827,16 @@ describe("ConsoleClient", function() {
     it("renders chart placeholder", function() {
       const state = createInitialState("testDoc");
       state.mode = "grid";
-      state.panes = [{
+      state.panes = [makePane({
         sectionInfo: {
           sectionId: 1, tableRef: 1, tableId: "Data", parentKey: "chart",
           title: "My Chart",
           linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "",
         },
         columns: [],
-        rowIds: [], allRowIds: [],
-        colValues: {}, allColValues: {},
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      }];
+        rowIds: [],
+        colValues: {},
+      })];
       state.focusedPane = 0;
       state.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
       const output = render(state);
@@ -852,23 +845,23 @@ describe("ConsoleClient", function() {
     });
   });
 
+  // Helper: build a PaneState for sort/filter tests with a default record
+  // section and Text columns inferred from colValues keys.
+  function makeRecordPane(rowIds: number[], colValues: Record<string, any[]>): PaneState {
+    return makePane({
+      sectionInfo: {
+        sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
+        title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+        sortColRefs: "",
+      },
+      columns: Object.keys(colValues).map(colId => ({ colId, type: "Text", label: colId })),
+      rowIds,
+      colValues,
+    });
+  }
+
   describe("sorting", function() {
-    // Helper: build a minimal PaneState with allRowIds/allColValues
-    function makePaneData(rowIds: number[], colValues: Record<string, any[]>): PaneState {
-      return {
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "",
-        },
-        columns: Object.keys(colValues).map(colId => ({ colId, type: "Text", label: colId })),
-        rowIds: [...rowIds],
-        allRowIds: [...rowIds],
-        colValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
-        allColValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-    }
+    const makePaneData = makeRecordPane;
 
     // Minimal metaTables with _grist_Tables_column mapping colRef -> colId
     function makeMetaWithCols(cols: Array<{ ref: number; colId: string }>) {
@@ -950,76 +943,51 @@ describe("ConsoleClient", function() {
       assert.deepEqual(pane.colValues.Val, [null, 5, 10]);
     });
 
+    // Section info defaults for the "default sort" tests below.
+    const defaultSec = (tableId: string, sortColRefs: string) => ({
+      sectionId: 1, tableRef: 1, tableId, parentKey: "record",
+      title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
+      sortColRefs,
+    });
+    const emptyMeta = {
+      _grist_Tables_column: ["TableData", "_grist_Tables_column", [],
+        { colId: [], parentId: [], type: [], label: [] }],
+    };
+
     it("default: sorts by manualSort when sortColRefs is empty", function() {
       // rowIds returned by server may be in arbitrary order, but manualSort
       // defines the display order when no explicit sort is configured.
-      const pane: PaneState = {
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "ToDo", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "",
-        },
+      const pane = makePane({
+        sectionInfo: defaultSec("ToDo", ""),
         columns: [{ colId: "Task", type: "Text", label: "Task" }],
         rowIds: [1, 2, 3, 4],
-        allRowIds: [1, 2, 3, 4],
-        colValues: {
-          Task: ["A", "B", "C", "D"],
-          manualSort: [30, 10, 40, 20],
-        },
-        allColValues: {
-          Task: ["A", "B", "C", "D"],
-          manualSort: [30, 10, 40, 20],
-        },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
-      reapplySortAndFilter(pane, meta);
+        colValues: { Task: ["A", "B", "C", "D"], manualSort: [30, 10, 40, 20] },
+      });
+      reapplySortAndFilter(pane, emptyMeta);
       // Expected order by manualSort 10, 20, 30, 40: rowIds 2, 4, 1, 3
       assert.deepEqual(pane.rowIds, [2, 4, 1, 3]);
       assert.deepEqual(pane.colValues.Task, ["B", "D", "A", "C"]);
     });
 
     it("default: also handles sortColRefs = '[]'", function() {
-      const pane: PaneState = {
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "ToDo", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "[]",
-        },
+      const pane = makePane({
+        sectionInfo: defaultSec("ToDo", "[]"),
         columns: [{ colId: "Task", type: "Text", label: "Task" }],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
-        colValues: {
-          Task: ["A", "B", "C"],
-          manualSort: [20, 10, 30],
-        },
-        allColValues: {
-          Task: ["A", "B", "C"],
-          manualSort: [20, 10, 30],
-        },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
-      reapplySortAndFilter(pane, meta);
+        colValues: { Task: ["A", "B", "C"], manualSort: [20, 10, 30] },
+      });
+      reapplySortAndFilter(pane, emptyMeta);
       assert.deepEqual(pane.rowIds, [2, 1, 3]); // B(10), A(20), C(30)
     });
 
     it("default: no manualSort column -> no sorting", function() {
-      const pane: PaneState = {
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "",
-        },
+      const pane = makePane({
+        sectionInfo: defaultSec("T", ""),
         columns: [{ colId: "Val", type: "Text", label: "Val" }],
         rowIds: [3, 1, 2],
-        allRowIds: [3, 1, 2],
         colValues: { Val: ["C", "A", "B"] },
-        allColValues: { Val: ["C", "A", "B"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-      const meta = { _grist_Tables_column: ["TableData", "_grist_Tables_column", [], { colId: [], parentId: [], type: [], label: [] }] };
-      reapplySortAndFilter(pane, meta);
+      });
+      reapplySortAndFilter(pane, emptyMeta);
       assert.deepEqual(pane.rowIds, [3, 1, 2]); // unchanged
     });
   });
@@ -1049,21 +1017,7 @@ describe("ConsoleClient", function() {
   });
 
   describe("filtering", function() {
-    function makePaneData(rowIds: number[], colValues: Record<string, any[]>): PaneState {
-      return {
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "",
-        },
-        columns: Object.keys(colValues).map(colId => ({ colId, type: "Text", label: colId })),
-        rowIds: [...rowIds],
-        allRowIds: [...rowIds],
-        colValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
-        allColValues: Object.fromEntries(Object.entries(colValues).map(([k, v]) => [k, [...v]])),
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-    }
+    const makePaneData = makeRecordPane;
 
     function makeMetaWithFilters(
       cols: Array<{ ref: number; colId: string; type?: string }>,
@@ -1466,7 +1420,7 @@ describe("ConsoleClient", function() {
     function makeCollapsedState(): ReturnType<typeof createInitialState> {
       const state = createInitialState("testDoc");
       state.mode = "grid";
-      const visiblePane: PaneState = {
+      const visiblePane = makePane({
         sectionInfo: {
           sectionId: 7, tableRef: 2, tableId: "ToDo", parentKey: "record",
           title: "ToDo",
@@ -1474,12 +1428,9 @@ describe("ConsoleClient", function() {
         },
         columns: [{ colId: "Task", type: "Text", label: "Task" }],
         rowIds: [1, 2],
-        allRowIds: [1, 2],
         colValues: { Task: ["Task A", "Task B"] },
-        allColValues: { Task: ["Task A", "Task B"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
-      const collapsedPane: PaneState = {
+      });
+      const collapsedPane = makePane({
         sectionInfo: {
           sectionId: 4, tableRef: 1, tableId: "Dates", parentKey: "record",
           title: "Dates",
@@ -1487,11 +1438,8 @@ describe("ConsoleClient", function() {
         },
         columns: [{ colId: "Label", type: "Text", label: "Label" }],
         rowIds: [1, 2, 3],
-        allRowIds: [1, 2, 3],
         colValues: { Label: ["Mon", "Tue", "Wed"] },
-        allColValues: { Label: ["Mon", "Tue", "Wed"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+      });
       state.panes = [visiblePane, collapsedPane];
       state.collapsedPaneIndices = [1]; // pane index 1 is collapsed
       state.focusedPane = 0;
@@ -1657,24 +1605,14 @@ describe("ConsoleClient", function() {
 
   describe("ensureColVisible", function() {
     function makePaneForScroll(colCount: number) {
-      const columns = [];
+      const columns: Array<{ colId: string; type: string; label: string }> = [];
       const colValues: Record<string, any[]> = {};
       for (let i = 0; i < colCount; i++) {
         const colId = `Col${i}`;
         columns.push({ colId, type: "Text", label: colId });
         colValues[colId] = ["short"]; // each col ~5 chars wide
       }
-      return {
-        scrollCol: 0,
-        cursorCol: 0,
-        scrollRow: 0,
-        cursorRow: 0,
-        columns,
-        colValues,
-        rowIds: [1],
-        allRowIds: [1],
-        allColValues: colValues,
-      } as PaneState;
+      return makePane({ columns, rowIds: [1], colValues });
     }
 
     it("does nothing when cursor is visible", function() {
@@ -1876,18 +1814,15 @@ describe("ConsoleClient", function() {
   });
 
   describe("getVisualPaneOrder", function() {
-    function makePane(sectionId: number): PaneState {
-      return {
+    function emptyPane(sectionId: number): PaneState {
+      return makePane({
         sectionInfo: {
           sectionId, tableRef: 1, tableId: "T", parentKey: "record",
           title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
           sortColRefs: "",
         },
-        columns: [],
-        rowIds: [], allRowIds: [],
-        colValues: {}, allColValues: {},
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      };
+        columns: [], rowIds: [], colValues: {},
+      });
     }
 
     it("returns panes in layout-tree leaf order (top-to-bottom, left-to-right)", function() {
@@ -1896,7 +1831,7 @@ describe("ConsoleClient", function() {
       //   [ 2 ]
       // But state.panes is in metadata order [2, 0, 1]
       const state = createInitialState("testDoc");
-      state.panes = [makePane(30), makePane(10), makePane(20)];
+      state.panes = [emptyPane(30), emptyPane(10), emptyPane(20)];
       state.layout = {
         top: 0, left: 0, width: 80, height: 24, direction: "vertical",
         children: [
@@ -1918,7 +1853,7 @@ describe("ConsoleClient", function() {
 
     it("excludes collapsed panes from visual order", function() {
       const state = createInitialState("testDoc");
-      state.panes = [makePane(10), makePane(20), makePane(30)];
+      state.panes = [emptyPane(10), emptyPane(20), emptyPane(30)];
       state.layout = {
         top: 0, left: 0, width: 80, height: 24, direction: "vertical",
         children: [
@@ -1933,7 +1868,7 @@ describe("ConsoleClient", function() {
 
     it("falls back to pane-array order when no layout", function() {
       const state = createInitialState("testDoc");
-      state.panes = [makePane(10), makePane(20), makePane(30)];
+      state.panes = [emptyPane(10), emptyPane(20), emptyPane(30)];
       state.layout = null;
       state.collapsedPaneIndices = [1];
       const order = getVisualPaneOrder(state);
@@ -2010,19 +1945,7 @@ describe("ConsoleClient", function() {
     it("Enter edits when no link selected", function() {
       const state = makeCellViewerState("just text");
       // Need pane data for edit mode
-      state.panes = [{
-        sectionInfo: {
-          sectionId: 1, tableRef: 1, tableId: "T", parentKey: "record",
-          title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0,
-          sortColRefs: "",
-        },
-        columns: [{ colId: "Name", type: "Text", label: "Name" }],
-        rowIds: [1],
-        allRowIds: [1],
-        colValues: { Name: ["just text"] },
-        allColValues: { Name: ["just text"] },
-        cursorRow: 0, cursorCol: 0, scrollRow: 0, scrollCol: 0,
-      }];
+      state.panes = [makeRecordPane([1], { Name: ["just text"] })];
       state.focusedPane = 0;
       handleKeypress(Buffer.from("\r"), state);
       assert.equal(state.mode, "editing");
