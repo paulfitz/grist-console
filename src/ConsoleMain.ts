@@ -2,8 +2,11 @@ import { BulkColValues, ColumnInfo, getBaseType } from "./types.js";
 import { ConsoleConnection } from "./ConsoleConnection.js";
 import { AppState, PaneState, createInitialState, activeView } from "./ConsoleAppState.js";
 import { render, showCursor } from "./ConsoleRenderer.js";
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SYNC_BEGIN, SYNC_END } from "./ConsoleDisplay.js";
-import { handleKeypress } from "./ConsoleInput.js";
+import {
+  ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SYNC_BEGIN, SYNC_END,
+  ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE, PASTE_BEGIN, PASTE_END,
+} from "./ConsoleDisplay.js";
+import { applyPasteToEdit, handleKeypress } from "./ConsoleInput.js";
 import { executeAddRow, executeDeleteRow, executeSaveEdit } from "./Commands.js";
 import {
   extractPages, extractSectionsForView,
@@ -118,9 +121,11 @@ export async function consoleMain(options: {
   });
 
   // Enter the alternate screen buffer so the initial state is clean and
-  // the user's scrollback isn't polluted with our rendering.
+  // the user's scrollback isn't polluted with our rendering. Also ask
+  // the terminal to wrap pastes with \x1b[200~ ... \x1b[201~ so we can
+  // tell paste apart from fast typing.
   if (process.stdout.isTTY) {
-    process.stdout.write(ENTER_ALT_SCREEN);
+    process.stdout.write(ENTER_ALT_SCREEN + ENABLE_BRACKETED_PASTE);
   }
 
   // Initial render
@@ -179,13 +184,90 @@ export async function consoleMain(options: {
       doCleanup(state, conn, resolve);
     });
 
+    // Bracketed-paste accumulator. While a paste is in progress, further
+    // data chunks are concatenated until we see the PASTE_END sentinel
+    // (the clipboard may not arrive in a single read).
+    let pasteBuf: string | null = null;
+
     const dataHandler = async (data: Buffer) => {
       // If probing is active, buffer input to replay after
       if (isProbing()) {
         bufferInput(data);
         return;
       }
-      await handleData(data);
+
+      let text = data.toString("utf8");
+
+      // Continue an in-progress paste.
+      if (pasteBuf !== null) {
+        const endIdx = text.indexOf(PASTE_END);
+        if (endIdx < 0) {
+          pasteBuf += text;
+          return;
+        }
+        const content = pasteBuf + text.slice(0, endIdx);
+        pasteBuf = null;
+        await handlePaste(content);
+        text = text.slice(endIdx + PASTE_END.length);
+        if (text.length === 0) { return; }
+      }
+
+      // Split out any bracketed pastes in this chunk. Non-paste bytes
+      // flow through the normal handler; the paste payload becomes a
+      // single action regardless of how many bytes it contains.
+      let startIdx = text.indexOf(PASTE_BEGIN);
+      while (startIdx >= 0) {
+        const pre = text.slice(0, startIdx);
+        if (pre.length > 0) { await handleData(Buffer.from(pre, "utf8")); }
+        const after = text.slice(startIdx + PASTE_BEGIN.length);
+        const endIdx = after.indexOf(PASTE_END);
+        if (endIdx < 0) {
+          // Paste spans this chunk -- buffer the tail and wait.
+          pasteBuf = after;
+          return;
+        }
+        await handlePaste(after.slice(0, endIdx));
+        text = after.slice(endIdx + PASTE_END.length);
+        startIdx = text.indexOf(PASTE_BEGIN);
+      }
+
+      // Belt-and-braces for terminals that don't support bracketed
+      // paste: if we're in editing mode and the chunk is a run of
+      // printable codepoints (no ESC, no control codes besides tab /
+      // newline / CR), treat it as a paste. Confined to editing mode
+      // because key-repeat in grid mode can batch navigation keys into
+      // a single chunk, which would otherwise be misread as paste.
+      if (text.length > 0 && state.mode === "editing") {
+        const cps = [...text];
+        const clean = cps.every(c => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(c));
+        if (cps.length >= 2 && clean) {
+          await handlePaste(text);
+          return;
+        }
+      }
+
+      if (text.length > 0) { await handleData(Buffer.from(text, "utf8")); }
+    };
+
+    const handlePaste = async (content: string) => {
+      // Normalise CRLF and stray CR to LF so downstream cell handling
+      // doesn't see mixed line endings.
+      content = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (state.mode === "grid") {
+        // Start editing the current cell with the pasted content as the
+        // initial value, mirroring what a user would expect from a
+        // spreadsheet paste (overwrite cell, stay in edit mode).
+        const pane = state.panes[state.focusedPane];
+        if (!pane || pane.rowIds.length === 0 || pane.columns.length === 0) { return; }
+        state.mode = "editing";
+        state.editValue = content;
+        state.editCursorPos = content.length;
+      } else if (state.mode === "editing") {
+        applyPasteToEdit(state, content);
+      } else {
+        return;
+      }
+      doRender(state);
     };
 
     const handleData = async (data: Buffer) => {
@@ -536,7 +618,7 @@ function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void
   process.stdout.write(showCursor());
   process.stdout.write("\x1b[0m");
   if (process.stdout.isTTY) {
-    process.stdout.write(EXIT_ALT_SCREEN);
+    process.stdout.write(DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN);
   } else {
     // No alt screen was entered (non-TTY); still clear what we wrote
     process.stdout.write("\x1b[2J\x1b[H");

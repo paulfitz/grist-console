@@ -27,6 +27,14 @@ export const EXIT_ALT_SCREEN = `${ESC}?1049l`;
 // non-supporting terminals ignore the unknown escape.
 export const SYNC_BEGIN = `${ESC}?2026h`;
 export const SYNC_END = `${ESC}?2026l`;
+// DEC private mode 2004: bracketed paste. When enabled, the terminal
+// wraps pasted text in PASTE_BEGIN/PASTE_END sentinels so we can tell
+// paste apart from fast typing and keep the literal content (including
+// newlines) rather than re-interpreting each byte as a keypress.
+export const ENABLE_BRACKETED_PASTE = `${ESC}?2004h`;
+export const DISABLE_BRACKETED_PASTE = `${ESC}?2004l`;
+export const PASTE_BEGIN = `${ESC}200~`;
+export const PASTE_END = `${ESC}201~`;
 export const ANSI_RESET = "\x1b[0m";
 
 /**

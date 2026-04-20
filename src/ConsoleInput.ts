@@ -78,7 +78,20 @@ export type InputAction =
   | { type: "view_cell" }
   | { type: "undo" }
   | { type: "redo" }
+  | { type: "paste"; content: string }
   | { type: "open_url"; url: string };
+
+/**
+ * Insert pasted text at the edit cursor. Shared by direct paste (in
+ * editing mode) and "start-editing-with-paste" (in grid mode, where
+ * the pasted content replaces the cell's prior value).
+ */
+export function applyPasteToEdit(state: AppState, content: string): void {
+  const before = state.editValue.slice(0, state.editCursorPos);
+  const after = state.editValue.slice(state.editCursorPos);
+  state.editValue = before + content + after;
+  state.editCursorPos = before.length + content.length;
+}
 
 /**
  * Parse a raw keypress buffer into a key name.
