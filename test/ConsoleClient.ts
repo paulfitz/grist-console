@@ -1,4 +1,4 @@
-import { formatCellValue, parseCellInput, ParseError } from "../src/ConsoleCellFormat.js";
+import { buildDisplayMap, formatCellValue, parseCellInput, ParseError } from "../src/ConsoleCellFormat.js";
 import {
   extractPages, extractSectionsForView, extractFieldsForSection,
   extractFiltersForSection, extractCollapsedSectionIds,
@@ -121,6 +121,25 @@ describe("ConsoleClient", function() {
         assert.equal(formatCellValue([GristObjCode.Reference, "People", 99], undefined, undefined, dv), "99");
         assert.equal(formatCellValue(17, "Ref:People", undefined, dv), "Alice");
         assert.equal(formatCellValue(0, "Ref:People", undefined, dv), "");
+      });
+
+      it("buildDisplayMap formats through the display column's type", function() {
+        // Date display column: raw timestamps must come out as dates.
+        const rowIds = [1, 2, 3];
+        const ts = [1704844800, 1704931200, null as any]; // 2024-01-10, 2024-01-11, null
+        const map = buildDisplayMap(rowIds, ts, "Date");
+        assert.equal(map.get(1), "2024-01-10");
+        assert.equal(map.get(2), "2024-01-11");
+        assert.equal(map.get(3), "");
+
+        // Numeric display column honours widgetOptions.
+        const num = buildDisplayMap([10], [1234.5], "Numeric", { decimals: 2 });
+        assert.equal(num.get(10), "1,234.50");
+
+        // Text display column passes through unchanged.
+        const text = buildDisplayMap([1, 2], ["Alice", "Bob"], "Text");
+        assert.equal(text.get(1), "Alice");
+        assert.equal(text.get(2), "Bob");
       });
 
       it("formats ReferenceList with display values", function() {

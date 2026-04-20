@@ -1,4 +1,5 @@
 import { CellValue, ColumnInfo, GristObjCode, getBaseType } from "./types.js";
+import { flattenToLine } from "./ConsoleDisplay.js";
 
 /**
  * Simple moment-style date format using native JS Date.
@@ -255,6 +256,26 @@ export class ParseError extends Error {
  * Parse a user-entered string back to a CellValue, based on column type.
  * Throws ParseError when the input can't be coerced to the column type.
  */
+/**
+ * Build a rowId → display-string map for a Ref/RefList column, formatting
+ * each display-column value through `formatCellValue` so the type is
+ * honoured (e.g. Date display column renders as a date, not a raw
+ * timestamp). Flattened to a single line for the grid renderer.
+ */
+export function buildDisplayMap(
+  rowIds: number[],
+  values: CellValue[],
+  displayColType: string,
+  displayColWidgetOpts?: Record<string, any>,
+): Map<number, string> {
+  const map = new Map<number, string>();
+  for (let i = 0; i < rowIds.length; i++) {
+    map.set(rowIds[i],
+      flattenToLine(formatCellValue(values[i], displayColType, displayColWidgetOpts)));
+  }
+  return map;
+}
+
 export function parseCellInput(input: string, colType: string): CellValue {
   const baseType = getBaseType(colType);
   switch (baseType) {

@@ -13,7 +13,7 @@ import {
   extractCollapsedSectionIds, getLayoutSpecForView,
   parseLayoutSpec, computeLayout, getColumnInfo, collectLeaves, Rect,
 } from "./ConsoleLayout.js";
-import { formatCellValue } from "./ConsoleCellFormat.js";
+import { buildDisplayMap, formatCellValue } from "./ConsoleCellFormat.js";
 import { Theme, defaultTheme, cycleTheme, isGoatTheme } from "./ConsoleTheme.js";
 import { stepGoat, resetGoat } from "./GoatAnimation.js";
 import { exec } from "child_process";
@@ -501,12 +501,12 @@ async function resolveDisplayValues(columns: ColumnInfo[], conn: ConsoleConnecti
       const displayCol = refData.colValues[visColInfo.colId];
       if (!displayCol) { continue; }
 
-      const displayMap = new Map<number, string>();
-      for (let i = 0; i < refData.rowIds.length; i++) {
-        const val = displayCol[i];
-        displayMap.set(refData.rowIds[i], val == null ? "" : String(val));
-      }
-      col.displayValues = displayMap;
+      // Format each display value through the display column's own type
+      // + widgetOptions, so a Date display column renders as a date rather
+      // than a raw timestamp (and similarly for DateTime, Numeric, etc.).
+      col.displayValues = buildDisplayMap(
+        refData.rowIds, displayCol, visColInfo.type, visColInfo.widgetOptions,
+      );
     } catch {
       // Referenced table might not be accessible; fall back to row IDs
     }
