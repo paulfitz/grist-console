@@ -138,7 +138,9 @@ program
               ...siteContext!, apiKey, theme, persistTerminal: true,
             });
           } catch (e: any) {
-            fatalError = `Could not list site: ${e.message}`;
+            // listSiteDocs throws user-friendly messages (see SiteApi.ts);
+            // no extra prefix needed.
+            fatalError = e.message;
             trace(`orchestrator: runSitePicker threw: ${e.message}`);
             return;
           }

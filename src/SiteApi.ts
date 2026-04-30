@@ -38,14 +38,18 @@ export async function listSiteDocs(
   if (apiKey) { headers.Authorization = `Bearer ${apiKey}`; }
 
   let resolvedSlug = orgSlug;
-  let resp = await fetch(workspacesUrl(serverUrl, resolvedSlug), { headers });
+  let resp;
+  try {
+    resp = await fetch(workspacesUrl(serverUrl, resolvedSlug), { headers });
+  } catch (e: any) {
+    throw new Error(`Couldn't reach ${hostOf(serverUrl)}: ${e.message}`);
+  }
   if (!resp.ok && resp.status === 400 && orgSlug === "current") {
     resolvedSlug = await resolveDefaultOrg(serverUrl, headers);
     resp = await fetch(workspacesUrl(serverUrl, resolvedSlug), { headers });
   }
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`GET ${workspacesUrl(serverUrl, resolvedSlug)} failed: ${resp.status} ${body}`);
+    throw new Error(await friendlyHttpMessage(resp, serverUrl, !!apiKey));
   }
   const workspaces = await resp.json() as Array<{
     id: number;
@@ -79,16 +83,47 @@ function workspacesUrl(serverUrl: string, orgSlug: string): string {
 
 async function resolveDefaultOrg(serverUrl: string, headers: Record<string, string>): Promise<string> {
   const resp = await fetch(`${serverUrl}/api/orgs`, { headers });
+  const hasAuth = "Authorization" in headers;
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`GET ${serverUrl}/api/orgs failed: ${resp.status} ${body}`);
+    throw new Error(await friendlyHttpMessage(resp, serverUrl, hasAuth));
   }
   const orgs = await resp.json() as Array<{ id: number; domain?: string | null }>;
-  if (!orgs.length) { throw new Error("No orgs accessible to this user"); }
+  if (!orgs.length) {
+    throw new Error(hasAuth
+      ? `No sites accessible at ${hostOf(serverUrl)}.`
+      : `${hostOf(serverUrl)} needs an API key to list its sites.`);
+  }
   // Domain is the human-readable slug; on personal orgs it can be null,
   // in which case the numeric id still works as the path component.
   const first = orgs[0];
   return first.domain || String(first.id);
+}
+
+/** Strip protocol + path so we can talk about the site by hostname. */
+function hostOf(serverUrl: string): string {
+  try { return new URL(serverUrl).host; } catch { return serverUrl; }
+}
+
+/**
+ * Translate a non-ok HTTP response into a sentence the user can act on.
+ * Avoids dumping the raw URL or JSON error body, which read like
+ * stack-trace noise to people who don't know the API.
+ */
+async function friendlyHttpMessage(resp: Response | any, serverUrl: string, hasAuth: boolean): Promise<string> {
+  const host = hostOf(serverUrl);
+  if (resp.status === 401 || resp.status === 403) {
+    return hasAuth
+      ? `${host} rejected your API key. Check it on your Grist profile page.`
+      : `${host} needs an API key. Pass --api-key, or set GRIST_API_KEY.`;
+  }
+  if (resp.status === 404) {
+    return `No Grist site found at ${host}. Check the URL.`;
+  }
+  if (resp.status >= 500) {
+    return `${host} is having trouble (HTTP ${resp.status}). Try again in a moment.`;
+  }
+  // Everything else: keep it short, no raw body.
+  return `${host} returned HTTP ${resp.status} when listing the site.`;
 }
 
 /**

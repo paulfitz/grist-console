@@ -1285,7 +1285,8 @@ describe("ConsoleConnection (integration)", function() {
         await listSiteDocs(SERVER_URL, "current", "totally-wrong-key");
       } catch (e: any) {
         threw = true;
-        assert.match(e.message, /failed: 4\d\d/, "expected a 4xx error");
+        assert.match(e.message, /rejected your API key|HTTP 4\d\d/,
+          "expected a friendly auth-failure message");
       }
       assert.isTrue(threw, "expected listSiteDocs to throw on bad auth");
     });
