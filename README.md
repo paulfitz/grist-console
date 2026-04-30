@@ -53,6 +53,43 @@ Got several docs you flip between? Save a tiny JSON file with `doc` (URL) and op
 grist-console mydoc.json
 ```
 
+## Browsing a whole site
+
+Point at a Grist site instead of one specific doc and you'll get a list:
+
+```bash
+grist-console https://myteam.getgrist.com --api-key $GRIST_API_KEY
+```
+
+```
+ // Open a doc  (17) //
+
+   > Sales pipeline           Home          5 min ago
+     Customer feedback        Home          2 hr ago
+     Q4 campaigns             Marketing     yesterday
+     Onboarding tracker       Sales         3 days ago
+     ...
+
+ ↑↓:select  Enter:open  T:theme  q:quit
+```
+
+Most-recent first, with the workspace and a relative time alongside the
+doc name. Pick one with Enter and you're in.
+
+Also works for public sites — no API key needed for things like
+`https://templates.getgrist.com`.
+
+Already inside a doc and want to switch? From the page or table picker,
+press **s** to bounce back to the site listing. Pick a different doc and
+keep going. The help bar shows `s:site` whenever this works.
+
+A few things to note:
+
+* On a team subdomain (`myteam.getgrist.com`), the URL itself names the
+  site. On a multi-tenant host, use `/o/<team>` (`docs.getgrist.com/o/myteam`).
+  Bare hosts pick the first org you have access to.
+* Trashed docs aren't shown.
+
 ## Getting around
 
 You'll start in the page picker:
@@ -171,6 +208,7 @@ Most things have an obvious key and a fallback. The fallback is there because te
 | Enter | Open the selected one |
 | Tab, `p`, Escape | Swap between page picker and table picker |
 | `t`, F4 | Switch to table picker |
+| `s` | Back to the site listing |
 | `T`, F12 | Cycle theme |
 | `q`, Ctrl+Q, Ctrl+C | Quit |
 
