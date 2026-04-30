@@ -153,6 +153,23 @@ function formatDateTimeValue(ts: number, opts?: Record<string, any>, timezone?: 
 }
 
 /**
+ * Format a bool with widget-aware glyphs. Switch → ○/●, CheckBox → ☐/☑,
+ * everything else (TextBox / no widget set) keeps the literal "true"/"false"
+ * the codebase has always emitted.
+ */
+function formatBool(value: boolean, widgetOpts?: Record<string, any>): string {
+  switch (widgetOpts?.widget) {
+    // Slider-style toggle: round housing for round knobs. Off shows a
+    // dotted-circle knob on the left "(◌·)"; on shows a fisheye knob on
+    // the right "(·◉)" -- the knob position + fill encode state, with the
+    // middle-dot acting as a quiet centered rail.
+    case "Switch": return value ? "(·◉)" : "(◌·)";
+    case "CheckBox": return value ? "☑" : "☐";
+    default: return value ? "true" : "false";
+  }
+}
+
+/**
  * Format a CellValue for display in the terminal.
  * When colType is provided, bare numeric values in Date/DateTime columns
  * are formatted as dates instead of raw numbers. Widget options from
@@ -164,7 +181,7 @@ export function formatCellValue(value: CellValue, colType?: string, widgetOpts?:
     return "";
   }
   if (typeof value === "boolean") {
-    return value ? "true" : "false";
+    return formatBool(value, widgetOpts);
   }
   if (typeof value === "number") {
     if (colType) {
@@ -281,8 +298,8 @@ export function parseCellInput(input: string, colType: string): CellValue {
   switch (baseType) {
     case "Bool": {
       const lower = input.toLowerCase().trim();
-      if (lower === "true" || lower === "1" || lower === "yes") { return true; }
-      if (lower === "false" || lower === "0" || lower === "no" || lower === "") { return false; }
+      if (lower === "true" || lower === "1" || lower === "yes" || lower === "☑" || lower === "●" || lower === "◉" || lower === "(·◉)") { return true; }
+      if (lower === "false" || lower === "0" || lower === "no" || lower === "" || lower === "☐" || lower === "○" || lower === "◌" || lower === "(◌·)") { return false; }
       throw new ParseError(colType, input);
     }
     case "Int": {

@@ -185,9 +185,10 @@ function positionEditCursor(
   const rowNumWidth = Math.max(3, String(maxRowId).length);
   const headerRows = t.headerSepLine ? 3 : 2;
   const editRow = paneTop + headerRows + (pane.cursorRow - pane.scrollRow) + trayHeight;
-  let editCol = paneLeft + rowNumWidth + t.colSeparator.length;
+  const sepWidth = displayWidth(t.colSeparator);
+  let editCol = paneLeft + rowNumWidth + sepWidth;
   for (let ci = pane.scrollCol; ci < pane.cursorCol && ci < paneLayout.length; ci++) {
-    editCol += paneLayout[ci].width + t.colSeparator.length;
+    editCol += paneLayout[ci].width + sepWidth;
   }
   const colWidth = paneLayout[pane.cursorCol]?.width || 0;
   const { cursorOffset } = editWindow(editValue, editCursorPos, colWidth);
@@ -225,10 +226,11 @@ function renderPaneInto(
   if (height < minHeight) { return; }
 
   // Determine visible columns
+  const sepWidth = displayWidth(t.colSeparator);
   let availWidth = width - rowNumWidth;
   const visibleCols: number[] = [];
   for (let c = pane.scrollCol; c < layout.length; c++) {
-    const needed = layout[c].width + t.colSeparator.length;
+    const needed = layout[c].width + sepWidth;
     if (needed > availWidth) { break; }
     visibleCols.push(c);
     availWidth -= needed;

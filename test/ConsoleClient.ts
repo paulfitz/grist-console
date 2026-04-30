@@ -71,6 +71,18 @@ describe("ConsoleClient", function() {
         assert.equal(formatCellValue(""), "");
       });
 
+      it("formats Bool with widget-aware glyphs", function() {
+        // No widget option keeps the literal string fallback.
+        assert.equal(formatCellValue(true, "Bool", {}), "true");
+        assert.equal(formatCellValue(false, "Bool", {}), "false");
+        // CheckBox widget renders as ballot-box glyphs.
+        assert.equal(formatCellValue(true, "Bool", { widget: "CheckBox" }), "☑");
+        assert.equal(formatCellValue(false, "Bool", { widget: "CheckBox" }), "☐");
+        // Switch widget renders as a slider-style toggle.
+        assert.equal(formatCellValue(true, "Bool", { widget: "Switch" }), "(·◉)");
+        assert.equal(formatCellValue(false, "Bool", { widget: "Switch" }), "(◌·)");
+      });
+
       it("formats Date values", function() {
         // ["d", timestamp] - 2024-01-10 midnight UTC = 1704844800
         const result = formatCellValue([GristObjCode.Date, 1704844800]);
@@ -205,6 +217,15 @@ describe("ConsoleClient", function() {
         assert.equal(parseCellInput("0", "Bool"), false);
         assert.equal(parseCellInput("yes", "Bool"), true);
         assert.equal(parseCellInput("no", "Bool"), false);
+        // Round-trip the widget glyphs we emit.
+        assert.equal(parseCellInput("☑", "Bool"), true);
+        assert.equal(parseCellInput("☐", "Bool"), false);
+        assert.equal(parseCellInput("●", "Bool"), true);
+        assert.equal(parseCellInput("○", "Bool"), false);
+        assert.equal(parseCellInput("◉", "Bool"), true);
+        assert.equal(parseCellInput("◌", "Bool"), false);
+        assert.equal(parseCellInput("(·◉)", "Bool"), true);
+        assert.equal(parseCellInput("(◌·)", "Bool"), false);
       });
 
       it("parses Int values", function() {
@@ -288,6 +309,40 @@ describe("ConsoleClient", function() {
       const output = render(state);
       assert.include(output, "Empty");
       assert.include(output, "0 rows");
+    });
+
+    it("shows all fitting columns regardless of ANSI in colSeparator", function() {
+      const origCols = process.stdout.columns;
+      const origRows = process.stdout.rows;
+      Object.defineProperty(process.stdout, "columns", { value: 120, configurable: true });
+      Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true });
+      try {
+        const columns = [
+          { colId: "Done", type: "Bool", label: "Done" },
+          { colId: "Archive", type: "Bool", label: "Archive" },
+          { colId: "Task", type: "Text", label: "Task" },
+          { colId: "Link", type: "Text", label: "Link" },
+          { colId: "Outcome", type: "Text", label: "Outcome" },
+          { colId: "Tag", type: "Text", label: "Tag" },
+        ];
+        const colValues = {
+          Done: [false], Archive: [false], Task: ["t"], Link: [""], Outcome: [""], Tag: [""],
+        };
+        for (const themeName of ["default", "matrix", "c64"]) {
+          const state = createInitialState("testDoc", getTheme(themeName));
+          state.mode = "grid";
+          state.currentTableId = "Tasks";
+          state.panes = [makePane({ columns, rowIds: [1], colValues })];
+          state.focusedPane = 0;
+          const plain = stripAnsi(render(state));
+          for (const col of columns) {
+            assert.include(plain, col.label, `${themeName} theme should show "${col.label}"`);
+          }
+        }
+      } finally {
+        Object.defineProperty(process.stdout, "columns", { value: origCols, configurable: true });
+        Object.defineProperty(process.stdout, "rows", { value: origRows, configurable: true });
+      }
     });
   });
 
@@ -1672,6 +1727,57 @@ describe("ConsoleClient", function() {
       pane.cursorCol = 2;
       ensureColVisible(pane, 200);
       assert.equal(pane.scrollCol, 2);
+    });
+  });
+
+  describe("Bool toggle on edit triggers", function() {
+    function makeBoolState(initial: boolean) {
+      const state = createInitialState("testDoc");
+      state.mode = "grid";
+      state.currentTableId = "T";
+      state.panes = [makePane({
+        columns: [{ colId: "Done", type: "Bool", label: "Done", widgetOptions: { widget: "CheckBox" } }],
+        rowIds: [1],
+        colValues: { Done: [initial] },
+      })];
+      state.focusedPane = 0;
+      return state;
+    }
+
+    it("Enter on a Bool cell flips the value via save_edit", function() {
+      const state = makeBoolState(false);
+      const action = handleKeypress(Buffer.from([0x0d]), state); // Enter
+      assert.equal(action.type, "save_edit");
+      assert.equal(state.editValue, "true");
+    });
+
+    it("Space on a Bool cell flips the value", function() {
+      const state = makeBoolState(true);
+      const action = handleKeypress(Buffer.from(" "), state);
+      assert.equal(action.type, "save_edit");
+      assert.equal(state.editValue, "false");
+    });
+
+    it("printable char on a Bool cell flips instead of typing", function() {
+      const state = makeBoolState(false);
+      const action = handleKeypress(Buffer.from("t"), state);
+      assert.equal(action.type, "save_edit");
+      assert.equal(state.editValue, "true");
+    });
+
+    it("Enter on a non-Bool cell still opens the text editor", function() {
+      const state = createInitialState("testDoc");
+      state.mode = "grid";
+      state.currentTableId = "T";
+      state.panes = [makePane({
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1],
+        colValues: { Name: ["Alice"] },
+      })];
+      state.focusedPane = 0;
+      const action = handleKeypress(Buffer.from([0x0d]), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.mode, "editing");
     });
   });
 

@@ -148,7 +148,7 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
     }
   }
 
-  let result = screenPreamble(t) + lines.join("\n");
+  let result = screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
 
   // Show terminal cursor when editing in cell viewer
   if (isEditing) {
@@ -228,10 +228,11 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   const rowNumWidth = Math.max(3, String(maxRowId).length);
 
   // Determine visible columns based on scrollCol and terminal width
+  const sepWidth = displayWidth(t.colSeparator);
   let availWidth = termCols - rowNumWidth;
   const visibleCols: number[] = [];
   for (let c = pane.scrollCol; c < layout.length; c++) {
-    const needed = layout[c].width + t.colSeparator.length;
+    const needed = layout[c].width + sepWidth;
     if (needed > availWidth) { break; }
     visibleCols.push(c);
     availWidth -= needed;
@@ -321,10 +322,10 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   // Show terminal cursor at edit position when editing
   if (state.mode === "editing" && !state.cellViewerContent) {
     const editRow = headerRows + (pane.cursorRow - pane.scrollRow);
-    let editCol = rowNumWidth + t.colSeparator.length;
+    let editCol = rowNumWidth + sepWidth;
     for (const ci of visibleCols) {
       if (ci === pane.cursorCol) { break; }
-      editCol += layout[ci].width + t.colSeparator.length;
+      editCol += layout[ci].width + sepWidth;
     }
     const colWidth = layout[pane.cursorCol]?.width || 0;
     const { cursorOffset } = editWindow(state.editValue, state.editCursorPos, colWidth);

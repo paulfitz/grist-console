@@ -2,6 +2,7 @@ import { AppState, isCardPane, PaneState, activeView, editReturnMode } from "./C
 import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
 import { collectLeaves, computeColLayout, LayoutNode } from "./ConsoleLayout.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
+import { getBaseType } from "./types.js";
 
 /**
  * Ensure scrollCol is adjusted so cursorCol is visible.
@@ -440,7 +441,13 @@ function handleGridViewKey(
   switch (key) {
     case "enter":
     case "f2":
-      if (hasCells) { enterPaneEditMode(state, pane); }
+    case " ":
+      if (hasCells) {
+        const flip = tryBoolToggle(state, pane);
+        if (flip) { return flip; }
+        if (key === " ") { break; } // fall through to printable-char path
+        enterPaneEditMode(state, pane);
+      }
       return { type: "render" };
     case "backspace":
       // Start editing with an empty value (Grist parity).
@@ -592,6 +599,8 @@ function handleGridViewKey(
   // character as the initial value. This is the core "spreadsheet feel"
   // change: pressing `a` no longer adds a row, it puts `a` in the cell.
   if (isPrintableKey(key) && hasCells) {
+    const flip = tryBoolToggle(state, pane);
+    if (flip) { return flip; }
     enterPaneEditMode(state, pane);
     state.editValue = key;
     state.editCursorPos = key.length;
@@ -653,7 +662,13 @@ function handleCardPaneKey(
   switch (key) {
     case "enter":
     case "f2":
-      if (hasCells) { enterPaneEditMode(state, pane); }
+    case " ":
+      if (hasCells) {
+        const flip = tryBoolToggle(state, pane);
+        if (flip) { return flip; }
+        if (key === " ") { break; } // fall through to printable-char path
+        enterPaneEditMode(state, pane);
+      }
       return { type: "render" };
     case "backspace":
       if (hasCells) {
@@ -769,6 +784,8 @@ function handleCardPaneKey(
 
   // Printable char → start editing the focused field with that char.
   if (isPrintableKey(key) && hasCells) {
+    const flip = tryBoolToggle(state, pane);
+    if (flip) { return flip; }
     enterPaneEditMode(state, pane);
     state.editValue = key;
     state.editCursorPos = key.length;
@@ -776,6 +793,22 @@ function handleCardPaneKey(
   }
 
   return { type: "none" };
+}
+
+/**
+ * For consistency with Grist, any edit trigger on a Bool cell flips the
+ * value rather than opening a text editor. Returns a save_edit InputAction
+ * if the cell is Bool, otherwise null (caller falls back to text edit).
+ */
+function tryBoolToggle(state: AppState, pane: PaneState): InputAction | null {
+  if (pane.rowIds.length === 0 || pane.columns.length === 0) { return null; }
+  const col = pane.columns[pane.cursorCol];
+  if (getBaseType(col.type) !== "Bool") { return null; }
+  const cur = pane.colValues[col.colId]?.[pane.cursorRow];
+  state.editValue = cur ? "false" : "true";
+  state.editCursorPos = state.editValue.length;
+  state.mode = "editing"; // executeSaveEdit reads editValue and exits this mode
+  return { type: "save_edit" };
 }
 
 function enterPaneEditMode(state: AppState, pane: PaneState): void {
