@@ -8,6 +8,7 @@ import {
 import { AppState, PaneState, activeView } from "./ConsoleAppState.js";
 import { renderMultiPane } from "./ConsoleMultiPane.js";
 import { computeColLayout } from "./ConsoleLayout.js";
+import { formatRelativeTime } from "./SiteApi.js";
 import { renderGoatOverlay, goatStatus } from "./GoatAnimation.js";
 import { isGoatTheme } from "./ConsoleTheme.js";
 
@@ -70,6 +71,9 @@ export function render(state: AppState): string {
 
   if (state.mode === "cell_viewer" || (state.mode === "editing" && state.cellViewerContent)) {
     return renderCellViewer(state, termRows, termCols);
+  }
+  if (state.mode === "site_picker") {
+    return renderSitePicker(state, termRows, termCols);
   }
   if (state.mode === "table_picker") {
     return renderTablePicker(state, termRows, termCols);
@@ -205,7 +209,8 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
 
   // Key help
   const pagesHint = state.pages.length > 0 ? "  Tab:pages" : "";
-  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}  T:theme  q:quit`));
+  const siteHint = state.hasSiteContext ? "  s:site" : "";
+  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}${siteHint}  T:theme  q:quit`));
 
   // Status
   lines.push(getStatusLine(state, termCols));
@@ -336,6 +341,57 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   return result;
 }
 
+/**
+ * Three-column flat list of docs across the site, sorted most-recent
+ * first. Doc-name column gets ~half the width; workspace + relative-time
+ * share the rest. The cursor row is highlighted with the same pickerSelected
+ * style the table/page pickers use.
+ */
+function renderSitePicker(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
+  const lines: string[] = [];
+
+  const title = t.pickerTitleFormat(state.siteDocs.length === 0
+    ? "No docs found"
+    : `Open a doc  (${state.siteDocs.length})`);
+  lines.push(t.titleBar(padRight(title, termCols)));
+  lines.push("");
+
+  // Column widths. Reserve 4 cells for the "  > " / "    " prefix.
+  const prefixWidth = 4;
+  const avail = Math.max(20, termCols - prefixWidth - 2);
+  const timeWidth = 14;
+  const wsWidth = Math.min(24, Math.max(10, Math.floor(avail * 0.3)));
+  const nameWidth = Math.max(10, avail - wsWidth - timeWidth - 4);
+
+  const visibleCount = Math.min(state.siteDocs.length, termRows - 5);
+  // Scroll so the cursor stays in view.
+  const scroll = Math.max(0,
+    Math.min(state.siteDocs.length - visibleCount,
+      state.siteCursor - Math.floor(visibleCount / 2)));
+  const now = new Date();
+  for (let i = 0; i < visibleCount; i++) {
+    const idx = scroll + i;
+    if (idx >= state.siteDocs.length) { lines.push(""); continue; }
+    const d = state.siteDocs[idx];
+    const name = padRight(truncate(d.name, nameWidth), nameWidth);
+    const ws = padRight(truncate(d.workspaceName, wsWidth), wsWidth);
+    const when = padRight(truncate(formatRelativeTime(d.updatedAt, now), timeWidth), timeWidth);
+    const row = `${name}  ${ws}  ${when}`;
+    if (idx === state.siteCursor) {
+      lines.push(`  ${t.pickerSelected(` > ${row} `)}`);
+    } else {
+      lines.push(`     ${row}`);
+    }
+  }
+  while (lines.length < termRows - 2) { lines.push(""); }
+
+  lines.push(t.helpBar("↑↓:select  Enter:open  T:theme  q:quit"));
+  lines.push(getStatusLine(state, termCols));
+
+  return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
+}
+
 function renderPagePicker(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
   const lines: string[] = [];
@@ -359,7 +415,8 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
     lines.push("");
   }
 
-  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  Tab:tables  T:theme  q:quit"));
+  const siteHint = state.hasSiteContext ? "  s:site" : "";
+  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open  Tab:tables${siteHint}  T:theme  q:quit`));
   lines.push(getStatusLine(state, termCols));
 
   // Clear to end of line after each line to overwrite any stale content

@@ -6,9 +6,11 @@
 
 import { BulkColValues, ColumnInfo } from "./types.js";
 import { BoxSpec, LayoutNode, PageInfo, SectionInfo } from "./ConsoleLayout.js";
+import { SiteDoc } from "./SiteApi.js";
 import { Theme, defaultTheme } from "./ConsoleTheme.js";
 
 export type AppMode =
+  | "site_picker"
   | "table_picker"
   | "page_picker"
   | "grid"
@@ -73,6 +75,14 @@ export interface AppState {
   undoPointer: number; // index of next action that would be undone; 0 = nothing to undo
   // Theme
   theme: Theme;
+  // Site picker (mode "site_picker"). Empty when navigating inside a doc;
+  // populated when the user launched grist-console against a site URL or
+  // popped back to the picker via Ctrl-F.
+  siteDocs: SiteDoc[];
+  siteCursor: number;
+  /** True when the app was launched via a site URL, so the table/page
+   *  pickers should offer "s" to pop back to the site picker. */
+  hasSiteContext: boolean;
 }
 
 export function createInitialState(docId: string, theme?: Theme): AppState {
@@ -101,6 +111,9 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     undoStack: [],
     undoPointer: 0,
     theme: theme || defaultTheme,
+    siteDocs: [],
+    siteCursor: 0,
+    hasSiteContext: false,
   };
 }
 

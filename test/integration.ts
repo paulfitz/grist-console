@@ -6,6 +6,7 @@
  */
 
 import { assert } from "chai";
+import fetch from "node-fetch";
 import { ConsoleConnection } from "../src/ConsoleConnection.js";
 import {
   extractPages, extractSectionsForView, extractFiltersForSection,
@@ -14,6 +15,7 @@ import {
 import { applySortSpec, applySectionFilters } from "../src/LinkingState.js";
 import { appendRowToColValues } from "../src/ActionDispatcher.js";
 import { computeInsertManualSort } from "../src/Commands.js";
+import { listSiteDocs } from "../src/SiteApi.js";
 
 function defaultVal(colType: string): any {
   const base = colType.split(":")[0];
@@ -1221,6 +1223,71 @@ describe("ConsoleConnection (integration)", function() {
         assert.deepEqual(tasksLinkedTo(datesPane.rowIds[1]), ["Task B", "Task C"],
           "Should show tasks whose DateRefs contains Tue (rowId 2)");
       });
+    });
+  });
+
+  describe("site listing (REST /api/orgs/<slug>/workspaces)", function() {
+    it("lists the test doc and its workspace via listSiteDocs", async function() {
+      // The integration suite already created `console-integration-test`
+      // (public) before this block; both should turn up here.
+      const docs = await listSiteDocs(SERVER_URL, "current", API_KEY);
+      assert.isAbove(docs.length, 0, "expected at least one doc in the test site");
+      const ours = docs.find(d => d.id === docId);
+      assert.exists(ours, `expected ${docId} in returned docs`);
+      // Shape sanity: every doc has the fields the picker will render.
+      for (const d of docs) {
+        assert.isString(d.id, `doc.id should be a string: ${JSON.stringify(d)}`);
+        assert.isString(d.name, `doc.name should be a string: ${JSON.stringify(d)}`);
+        assert.isNumber(d.workspaceId, `doc.workspaceId should be a number: ${JSON.stringify(d)}`);
+        assert.isString(d.workspaceName, `doc.workspaceName should be a string: ${JSON.stringify(d)}`);
+        assert.isString(d.updatedAt, `doc.updatedAt should be a string: ${JSON.stringify(d)}`);
+        assert.isNotEmpty(d.updatedAt, `doc.updatedAt should be set: ${JSON.stringify(d)}`);
+        assert.isNull(d.removedAt, "trashed docs should have been filtered out");
+      }
+    });
+
+    it("filters out trashed docs", async function() {
+      // Build a fresh doc, soft-delete it, confirm it disappears from the
+      // listing. (Grist's POST /docs/.../remove moves the doc to trash.)
+      const { docId: tempId } = await createTestDoc("temp-for-trash-test");
+      try {
+        const before = await listSiteDocs(SERVER_URL, "current", API_KEY);
+        assert.exists(before.find(d => d.id === tempId), "doc should be listed before trashing");
+
+        await fetch(`${SERVER_URL}/api/docs/${tempId}/remove`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${API_KEY}` },
+        });
+
+        const after = await listSiteDocs(SERVER_URL, "current", API_KEY);
+        assert.notExists(after.find(d => d.id === tempId), "doc should NOT be listed after trashing");
+      } finally {
+        // Best-effort permanent delete (ignore failures so the assertion
+        // result is what surfaces).
+        await fetch(`${SERVER_URL}/api/docs/${tempId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${API_KEY}` },
+        }).catch(() => {});
+      }
+    });
+
+    it("returns docs sorted by updatedAt descending", async function() {
+      const docs = await listSiteDocs(SERVER_URL, "current", API_KEY);
+      for (let i = 1; i < docs.length; i++) {
+        assert.isAtLeast(docs[i - 1].updatedAt.localeCompare(docs[i].updatedAt), 0,
+          `docs[${i - 1}].updatedAt should be >= docs[${i}].updatedAt`);
+      }
+    });
+
+    it("rejects when the API key is wrong", async function() {
+      let threw = false;
+      try {
+        await listSiteDocs(SERVER_URL, "current", "totally-wrong-key");
+      } catch (e: any) {
+        threw = true;
+        assert.match(e.message, /failed: 4\d\d/, "expected a 4xx error");
+      }
+      assert.isTrue(threw, "expected listSiteDocs to throw on bad auth");
     });
   });
 });

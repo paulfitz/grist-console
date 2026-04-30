@@ -20,7 +20,8 @@ import {
 import { appendRowToColValues, applyDocActions } from "../src/ActionDispatcher.js";
 import { handleOwnActionGroup } from "../src/UndoStack.js";
 import { executeSaveEdit } from "../src/Commands.js";
-import { parseGristDocUrl } from "../src/urlParser.js";
+import { parseGristDocUrl, parseGristSiteUrl } from "../src/urlParser.js";
+import { formatRelativeTime } from "../src/SiteApi.js";
 import { GristObjCode } from "../src/types.js";
 
 import { assert } from "chai";
@@ -2264,6 +2265,189 @@ describe("ConsoleClient", function() {
 
     it("returns null for URL with no doc ID", function() {
       assert.isNull(parseGristDocUrl("https://docs.getgrist.com/"));
+    });
+  });
+
+  describe("parseGristSiteUrl", function() {
+    it("uses 'current' for a bare host", function() {
+      assert.deepEqual(parseGristSiteUrl("https://docs.getgrist.com"),
+        { serverUrl: "https://docs.getgrist.com", orgSlug: "current" });
+    });
+
+    it("uses 'current' for a team subdomain (host carries org context)", function() {
+      assert.deepEqual(parseGristSiteUrl("https://myteam.getgrist.com/"),
+        { serverUrl: "https://myteam.getgrist.com", orgSlug: "current" });
+    });
+
+    it("extracts the org slug from /o/<slug>", function() {
+      assert.deepEqual(parseGristSiteUrl("https://docs.getgrist.com/o/myteam"),
+        { serverUrl: "https://docs.getgrist.com", orgSlug: "myteam" });
+    });
+
+    it("handles a self-hosted server", function() {
+      assert.deepEqual(parseGristSiteUrl("http://localhost:8484/"),
+        { serverUrl: "http://localhost:8484", orgSlug: "current" });
+    });
+
+    it("rejects non-http(s) URLs", function() {
+      assert.isNull(parseGristSiteUrl("ftp://example.com"));
+    });
+
+    it("rejects unparseable input", function() {
+      assert.isNull(parseGristSiteUrl("not-a-url"));
+    });
+  });
+
+  describe("formatRelativeTime", function() {
+    const now = new Date("2026-04-30T12:00:00Z");
+    it("returns 'just now' for sub-minute", function() {
+      assert.equal(formatRelativeTime("2026-04-30T11:59:30Z", now), "just now");
+    });
+    it("uses minutes under an hour", function() {
+      assert.equal(formatRelativeTime("2026-04-30T11:55:00Z", now), "5 min ago");
+    });
+    it("uses hours under a day", function() {
+      assert.equal(formatRelativeTime("2026-04-30T10:00:00Z", now), "2 hr ago");
+    });
+    it("says 'yesterday' for ~1 day", function() {
+      assert.equal(formatRelativeTime("2026-04-29T12:00:00Z", now), "yesterday");
+    });
+    it("uses days under two weeks", function() {
+      assert.equal(formatRelativeTime("2026-04-25T12:00:00Z", now), "5 days ago");
+    });
+    it("uses weeks for older items", function() {
+      assert.equal(formatRelativeTime("2026-04-01T12:00:00Z", now), "4 weeks ago");
+    });
+    it("falls back to month + day for very old items", function() {
+      assert.equal(formatRelativeTime("2026-01-15T12:00:00Z", now), "Jan 15");
+    });
+    it("returns empty for missing or junk", function() {
+      assert.equal(formatRelativeTime("", now), "");
+      assert.equal(formatRelativeTime("garbage", now), "");
+    });
+  });
+
+  describe("site picker", function() {
+    function makeSiteState() {
+      const state = createInitialState("");
+      state.mode = "site_picker";
+      state.siteDocs = [
+        { id: "abc", name: "Sales pipeline", workspaceId: 1, workspaceName: "Home",
+          updatedAt: "2026-04-30T11:55:00Z", removedAt: null },
+        { id: "def", name: "Customer feedback", workspaceId: 1, workspaceName: "Home",
+          updatedAt: "2026-04-30T10:00:00Z", removedAt: null },
+        { id: "ghi", name: "Q4 campaigns", workspaceId: 2, workspaceName: "Marketing",
+          updatedAt: "2026-04-29T12:00:00Z", removedAt: null },
+      ];
+      state.siteCursor = 0;
+      return state;
+    }
+
+    it("renders doc names, workspaces, and relative times", function() {
+      const state = makeSiteState();
+      const out = stripAnsi(render(state));
+      assert.include(out, "Sales pipeline");
+      assert.include(out, "Customer feedback");
+      assert.include(out, "Q4 campaigns");
+      assert.include(out, "Home");
+      assert.include(out, "Marketing");
+      // formatRelativeTime is exercised separately; just sanity check
+      // that *some* time string lands in the output for at least one row.
+      assert.match(out, /min ago|hr ago|yesterday|days ago|weeks ago|[A-Z][a-z]{2} \d+/);
+    });
+
+    it("shows 'No docs found' when the site is empty", function() {
+      const state = makeSiteState();
+      state.siteDocs = [];
+      const out = stripAnsi(render(state));
+      assert.include(out, "No docs found");
+    });
+
+    it("down/up move the cursor", function() {
+      const state = makeSiteState();
+      handleKeypress(Buffer.from("\x1b[B"), state); // down
+      assert.equal(state.siteCursor, 1);
+      handleKeypress(Buffer.from("\x1b[B"), state);
+      assert.equal(state.siteCursor, 2);
+      handleKeypress(Buffer.from("\x1b[B"), state); // clamped at last
+      assert.equal(state.siteCursor, 2);
+      handleKeypress(Buffer.from("\x1b[A"), state); // up
+      assert.equal(state.siteCursor, 1);
+    });
+
+    it("Enter returns select_doc with at least one doc", function() {
+      const state = makeSiteState();
+      const action = handleKeypress(Buffer.from([0x0d]), state);
+      assert.equal(action.type, "select_doc");
+    });
+
+    it("Enter is a no-op when the list is empty", function() {
+      const state = makeSiteState();
+      state.siteDocs = [];
+      const action = handleKeypress(Buffer.from([0x0d]), state);
+      assert.equal(action.type, "none");
+    });
+
+    it("q / Esc / Ctrl-C all quit", function() {
+      for (const buf of [Buffer.from("q"), Buffer.from("\x1b"), Buffer.from([0x03])]) {
+        const state = makeSiteState();
+        const action = handleKeypress(buf, state);
+        assert.equal(action.type, "quit", `expected quit for ${[...buf]}`);
+      }
+    });
+  });
+
+  describe("'s' from picker pops back to site picker", function() {
+    it("page picker emits switch_to_site when hasSiteContext is true", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      state.hasSiteContext = true;
+      const action = handleKeypress(Buffer.from("s"), state);
+      assert.equal(action.type, "switch_to_site");
+    });
+
+    it("page picker ignores 's' when hasSiteContext is false", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      const action = handleKeypress(Buffer.from("s"), state);
+      assert.equal(action.type, "none");
+    });
+
+    it("table picker emits switch_to_site when hasSiteContext is true", function() {
+      const state = createInitialState("docId");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      state.hasSiteContext = true;
+      const action = handleKeypress(Buffer.from("s"), state);
+      assert.equal(action.type, "switch_to_site");
+    });
+
+    it("table picker ignores 's' when hasSiteContext is false", function() {
+      const state = createInitialState("docId");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      const action = handleKeypress(Buffer.from("s"), state);
+      assert.equal(action.type, "none");
+    });
+
+    it("page picker shows 's:site' in help bar only when hasSiteContext", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      assert.notInclude(stripAnsi(render(state)), "s:site");
+      state.hasSiteContext = true;
+      assert.include(stripAnsi(render(state)), "s:site");
+    });
+
+    it("table picker shows 's:site' in help bar only when hasSiteContext", function() {
+      const state = createInitialState("docId");
+      state.mode = "table_picker";
+      state.tableIds = ["People"];
+      assert.notInclude(stripAnsi(render(state)), "s:site");
+      state.hasSiteContext = true;
+      assert.include(stripAnsi(render(state)), "s:site");
     });
   });
 

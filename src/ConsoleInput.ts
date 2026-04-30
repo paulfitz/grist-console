@@ -64,6 +64,7 @@ export type InputAction =
   | { type: "none" }
   | { type: "quit" }
   | { type: "render" }
+  | { type: "select_doc" }
   | { type: "select_table" }
   | { type: "select_page" }
   | { type: "refresh" }
@@ -72,6 +73,7 @@ export type InputAction =
   | { type: "delete_row" }
   | { type: "switch_to_tables" }
   | { type: "switch_to_pages" }
+  | { type: "switch_to_site" }
   | { type: "focus_next_pane" }
   | { type: "focus_prev_pane" }
   | { type: "cycle_theme" }
@@ -286,6 +288,29 @@ function navigateList(
   }
 }
 
+function handleSitePickerKey(key: string, state: AppState): InputAction {
+  const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
+  const nav = navigateList(key, state.siteCursor, state.siteDocs.length, pageSize);
+  if (nav.handled) {
+    state.siteCursor = nav.cursor;
+    return { type: "render" };
+  }
+  switch (key) {
+    case "enter":
+      return state.siteDocs.length > 0 ? { type: "select_doc" } : { type: "none" };
+    case "T":
+    case "f12":
+      return { type: "cycle_theme" };
+    case "q":
+    case "escape":
+    case "ctrl-q":
+    case "ctrl-c":
+      return { type: "quit" };
+    default:
+      return { type: "none" };
+  }
+}
+
 function handleTablePickerKey(key: string, state: AppState): InputAction {
   const pageSize = Math.max(1, (process.stdout.rows || 24) - 5);
   const nav = navigateList(key, state.selectedTableIndex, state.tableIds.length, pageSize);
@@ -303,6 +328,8 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
         return { type: "switch_to_pages" };
       }
       return { type: "none" };
+    case "s":
+      return state.hasSiteContext ? { type: "switch_to_site" } : { type: "none" };
     case "T":
     case "f12":
       return { type: "cycle_theme" };
@@ -407,6 +434,8 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
     case "t":
     case "f4":
       return { type: "switch_to_tables" };
+    case "s":
+      return state.hasSiteContext ? { type: "switch_to_site" } : { type: "none" };
     case "T":
     case "f12":
       return { type: "cycle_theme" };
@@ -941,6 +970,8 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
 export function handleKeypress(buf: Buffer, state: AppState): InputAction {
   const key = parseKey(buf);
   switch (state.mode) {
+    case "site_picker":
+      return handleSitePickerKey(key, state);
     case "table_picker":
       return handleTablePickerKey(key, state);
     case "page_picker":

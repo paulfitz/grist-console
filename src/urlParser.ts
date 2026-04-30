@@ -46,3 +46,35 @@ export function parseGristDocUrl(urlStr: string): { serverUrl: string, docId: st
   }
   return { serverUrl, docId, pageId };
 }
+
+/**
+ * Parse a Grist *site* URL (no specific doc) into server URL and an org
+ * slug suitable for `/api/orgs/<slug>/workspaces`.
+ *
+ *   https://docs.getgrist.com         → { serverUrl, orgSlug: "current" }
+ *   https://docs.getgrist.com/o/team  → { serverUrl, orgSlug: "team" }
+ *   https://myteam.getgrist.com       → { serverUrl, orgSlug: "current" }
+ *
+ * On a team-subdomain install (`myteam.getgrist.com`), the host itself
+ * carries the org context, so "current" is what we want -- Grist resolves
+ * "current" against the requesting hostname. On a multi-tenant host like
+ * `docs.getgrist.com`, `/o/<slug>` (when present) names the team explicitly.
+ *
+ * Returns null only if the input isn't a parseable http(s) URL.
+ */
+export function parseGristSiteUrl(urlStr: string): { serverUrl: string, orgSlug: string } | null {
+  let url: URL;
+  try {
+    url = new URL(urlStr);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") { return null; }
+  const serverUrl = `${url.protocol}//${url.host}`;
+  const parts = url.pathname.slice(1).split("/").filter(p => p.length > 0);
+  let orgSlug = "current";
+  if (parts[0] === "o" && parts.length > 1) {
+    orgSlug = parts[1];
+  }
+  return { serverUrl, orgSlug };
+}

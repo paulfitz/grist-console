@@ -21,9 +21,11 @@ import { calibrateTermWidth, disableMode2027 } from "./termWidth.js";
 import { handleOwnActionGroup, executeUndo, executeRedo } from "./UndoStack.js";
 import {
   scheduleProbe, bufferInput, setReplayHandler, isProbing, printWidthReport,
+  resetProbeState,
 } from "./WidthProbe.js";
 import { applyDocActions } from "./ActionDispatcher.js";
 import { applyAllSectionLinks as _applyAllSectionLinks, copyColValues } from "./LinkingState.js";
+import { trace } from "./Trace.js";
 
 function applyAllSectionLinks(state: AppState, conn: ConsoleConnection): void {
   _applyAllSectionLinks(state, conn.getMetaTables());
@@ -37,6 +39,13 @@ const commandFns: Record<string, (s: AppState, c: ConsoleConnection) => Promise<
 };
 
 /**
+ * Outcome of running the console client for one doc. "switch_to_site"
+ * means the user wants to pop back to the site picker; the orchestrator
+ * in index.ts loops on that and reopens the picker.
+ */
+export type ConsoleMainResult = { kind: "quit" } | { kind: "switch_to_site" };
+
+/**
  * Main entry point for the console client.
  */
 export async function consoleMain(options: {
@@ -47,9 +56,18 @@ export async function consoleMain(options: {
   theme?: Theme;
   pageId?: number;
   verbose?: boolean;
-}): Promise<void> {
+  /** Set when the app was launched against a site URL -- enables "s" in
+   *  the pickers to pop back to the site picker. */
+  hasSiteContext?: boolean;
+  /** When true, the caller is managing alt-screen / raw-mode lifecycle.
+   *  consoleMain skips entering/exiting those modes and only handles its
+   *  own per-doc setup (listeners, conn). Used by index.ts so we don't
+   *  toggle the terminal between consoleMain and runSitePicker. */
+  persistTerminal?: boolean;
+}): Promise<ConsoleMainResult> {
   const conn = new ConsoleConnection(options.serverUrl, options.docId, options.apiKey, { verbose: options.verbose });
   const state: AppState = createInitialState(options.docId, options.theme || defaultTheme);
+  state.hasSiteContext = !!options.hasSiteContext;
   _verbose = options.verbose ?? false;
 
   // Calibrate terminal character widths and connect in parallel
@@ -124,7 +142,8 @@ export async function consoleMain(options: {
   // the user's scrollback isn't polluted with our rendering. Also ask
   // the terminal to wrap pastes with \x1b[200~ ... \x1b[201~ so we can
   // tell paste apart from fast typing.
-  if (process.stdout.isTTY) {
+  const manageTerminal = !options.persistTerminal;
+  if (manageTerminal && process.stdout.isTTY) {
     process.stdout.write(ENTER_ALT_SCREEN + ENABLE_BRACKETED_PASTE);
   }
 
@@ -160,10 +179,11 @@ export async function consoleMain(options: {
   };
   syncGoatTimer();
 
-  // Return a promise that resolves only when the user quits.
-  return new Promise<void>((resolve) => {
-    // Set up raw mode input
-    if (process.stdin.isTTY) {
+  // Return a promise that resolves when the user quits or asks to switch
+  // back to the site picker.
+  return new Promise<ConsoleMainResult>((resolve) => {
+    // Set up raw mode input (skip if the caller is managing terminal mode).
+    if (manageTerminal && process.stdin.isTTY) {
       process.stdin.setRawMode(true);
     }
     process.stdin.resume();
@@ -181,7 +201,7 @@ export async function consoleMain(options: {
 
     process.stdin.on("end", () => {
       cleanupGoat();
-      doCleanup(state, conn, resolve);
+      doCleanup(state, conn, resolve, { kind: "quit" }, manageTerminal);
     });
 
     // Bracketed-paste accumulator. While a paste is in progress, further
@@ -275,7 +295,7 @@ export async function consoleMain(options: {
       switch (action.type) {
         case "quit":
           cleanupGoat();
-          doCleanup(state, conn, resolve);
+          doCleanup(state, conn, resolve, { kind: "quit" }, manageTerminal);
           return;
         case "render": {
           // Clear transient status on any navigation/render
@@ -339,6 +359,11 @@ export async function consoleMain(options: {
           applyAllSectionLinks(state, conn);
           doRender(state);
           break;
+        case "switch_to_site":
+          trace(`consoleMain: switch_to_site action received`);
+          cleanupGoat();
+          doCleanup(state, conn, resolve, { kind: "switch_to_site" }, manageTerminal);
+          return;
         case "switch_to_tables":
         case "switch_to_pages":
           state.mode = action.type === "switch_to_tables" ? "table_picker" : "page_picker";
@@ -613,28 +638,45 @@ function doRender(state: AppState): void {
   process.stdout.write(SYNC_BEGIN + render(state) + SYNC_END);
 }
 
-function doCleanup(state: AppState, conn: ConsoleConnection, resolve: () => void): void {
-  disableMode2027();
-  process.stdout.write(showCursor());
-  process.stdout.write("\x1b[0m");
-  if (process.stdout.isTTY) {
-    process.stdout.write(DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN);
-  } else {
-    // No alt screen was entered (non-TTY); still clear what we wrote
-    process.stdout.write("\x1b[2J\x1b[H");
+function doCleanup(
+  state: AppState, conn: ConsoleConnection,
+  resolve: (r: ConsoleMainResult) => void,
+  result: ConsoleMainResult = { kind: "quit" },
+  manageTerminal = true,
+): void {
+  // Tear down terminal mode only when:
+  //   - we own the terminal lifecycle (manageTerminal), AND
+  //   - this is a real quit, not a switch_to_site handoff.
+  // Toggling alt-screen / bracketed-paste / raw-mode mid-session can
+  // make the TTY emit response bytes that get re-injected as keypresses,
+  // silently quitting the next picker.
+  const isQuit = result.kind === "quit";
+  if (manageTerminal && isQuit) {
+    disableMode2027();
+    process.stdout.write(showCursor());
+    process.stdout.write("\x1b[0m");
+    if (process.stdout.isTTY) {
+      process.stdout.write(DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN);
+    } else {
+      process.stdout.write("\x1b[2J\x1b[H");
+    }
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.stdin.pause();
   }
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(false);
-  }
-  process.stdin.pause();
+  trace(`consoleMain: doCleanup kind=${result.kind} manageTerminal=${manageTerminal} dataListeners=${process.stdin.listenerCount("data")}`);
   process.stdin.removeAllListeners("data");
   process.stdin.removeAllListeners("end");
   process.stdout.removeAllListeners("resize");
+  // Drop any debounced probe + replay handler so they can't fire on
+  // stale state after we hand off to the site picker.
+  resetProbeState();
 
-  if (_verbose) {
+  if (isQuit && _verbose) {
     printWidthReport();
   }
 
-  conn.close().then(() => resolve()).catch(() => resolve());
+  conn.close().then(() => resolve(result)).catch(() => resolve(result));
 }
 

@@ -4,7 +4,13 @@ import { Command } from "commander";
 import { existsSync, readFileSync } from "fs";
 import { consoleMain } from "./ConsoleMain.js";
 import { getTheme, getThemeNames } from "./ConsoleTheme.js";
-import { parseGristDocUrl } from "./urlParser.js";
+import { parseGristDocUrl, parseGristSiteUrl } from "./urlParser.js";
+import { runSitePicker } from "./SitePicker.js";
+import {
+  ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR,
+  ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE,
+} from "./ConsoleDisplay.js";
+import { drainTrace, enableTrace, getTracePath, trace } from "./Trace.js";
 
 const program = new Command();
 program
@@ -19,6 +25,16 @@ program
   .action(async (urlOrServer: string, docIdArg: string | undefined,
                  options: { apiKey?: string, table?: string, theme?: string, verbose?: boolean }) => {
     let apiKey = options.apiKey || process.env.GRIST_API_KEY;
+    if (options.verbose) {
+      enableTrace();
+      // Surface every uncaught error/rejection so we can see it post-exit.
+      process.on("uncaughtException", (err) => {
+        trace(`uncaughtException: ${err && (err.stack || err.message || err)}`);
+      });
+      process.on("unhandledRejection", (reason) => {
+        trace(`unhandledRejection: ${reason && ((reason as any).stack || (reason as any).message || reason)}`);
+      });
+    }
     let theme;
     try {
       theme = getTheme(options.theme || "default");
@@ -29,6 +45,7 @@ program
     let serverUrl: string;
     let docId: string;
     let pageId: number | undefined;
+    let siteContext: { serverUrl: string; orgSlug: string } | undefined;
     if (docIdArg) {
       serverUrl = urlOrServer;
       docId = docIdArg;
@@ -57,16 +74,107 @@ program
         apiKey = config.key;
       }
     } else {
-      const parsed = parseGristDocUrl(urlOrServer);
-      if (!parsed) {
-        console.error("Could not parse document URL. Expected a Grist document URL, JSON config file, or: grist-console <server-url> <doc-id>");
-        process.exit(1);
+      const parsedDoc = parseGristDocUrl(urlOrServer);
+      if (parsedDoc) {
+        serverUrl = parsedDoc.serverUrl;
+        docId = parsedDoc.docId;
+        pageId = parsedDoc.pageId;
+      } else {
+        // No doc in the URL -- treat as a site URL and let the loop
+        // below run the picker. (No API-key gate: some sites are public,
+        // e.g. templates.getgrist.com -- if the listing fails, the
+        // picker surfaces the error.)
+        const parsedSite = parseGristSiteUrl(urlOrServer);
+        if (!parsedSite) {
+          console.error("Could not parse URL. Expected a Grist document URL, a Grist site URL, a JSON config file, or: grist-console <server-url> <doc-id>");
+          process.exit(1);
+        }
+        siteContext = { serverUrl: parsedSite.serverUrl, orgSlug: parsedSite.orgSlug };
+        serverUrl = parsedSite.serverUrl;
+        docId = "";
       }
-      serverUrl = parsed.serverUrl;
-      docId = parsed.docId;
-      pageId = parsed.pageId;
     }
-    await consoleMain({ serverUrl, docId, apiKey, table: options.table, theme, pageId, verbose: options.verbose });
+    // Always derive a siteContext if we don't have one yet, so "s" works
+    // from inside docs launched directly via doc URL.
+    if (!siteContext) {
+      const guessFrom = urlOrServer.endsWith(".json") ? `${serverUrl}/` : urlOrServer;
+      const parsedSite = parseGristSiteUrl(guessFrom) || parseGristSiteUrl(serverUrl);
+      if (parsedSite) {
+        siteContext = { serverUrl: parsedSite.serverUrl, orgSlug: parsedSite.orgSlug };
+      }
+    }
+
+    // Set up terminal state once, for the lifetime of the session.
+    // Both runSitePicker and consoleMain run with persistTerminal=true so
+    // they don't toggle alt-screen / bracketed-paste / raw-mode under us
+    // -- those toggles can provoke the TTY into emitting response bytes
+    // that get re-injected as keypresses on the next handler.
+    const isTty = !!process.stdout.isTTY;
+    if (isTty) { process.stdout.write(ENTER_ALT_SCREEN + ENABLE_BRACKETED_PASTE + HIDE_CURSOR); }
+    if (process.stdin.isTTY) { process.stdin.setRawMode(true); }
+    let exited = false;
+    const restoreTerminal = () => {
+      if (exited) { return; }
+      exited = true;
+      if (process.stdin.isTTY) { process.stdin.setRawMode(false); }
+      process.stdin.pause();
+      if (isTty) { process.stdout.write(SHOW_CURSOR + DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN); }
+    };
+    process.on("exit", restoreTerminal);
+
+    let fatalError: string | null = null;
+    try {
+      trace(`orchestrator: starting (initial docId=${docId || "(none)"} siteContext=${siteContext ? `${siteContext.serverUrl}/o/${siteContext.orgSlug}` : "(none)"})`);
+      // Loop so the user can press "s" inside an open doc to pop back to
+      // the site picker and pick a different doc.
+      while (true) {
+        if (!docId) {
+          trace(`orchestrator: invoking runSitePicker`);
+          let picked;
+          try {
+            picked = await runSitePicker({
+              ...siteContext!, apiKey, theme, persistTerminal: true,
+            });
+          } catch (e: any) {
+            fatalError = `Could not list site: ${e.message}`;
+            trace(`orchestrator: runSitePicker threw: ${e.message}`);
+            return;
+          }
+          trace(`orchestrator: runSitePicker returned ${picked ? `pick(${picked.id})` : "null"}`);
+          if (!picked) { return; } // user quit without picking
+          docId = picked.id;
+        }
+        trace(`orchestrator: invoking consoleMain (docId=${docId})`);
+        const result = await consoleMain({
+          serverUrl, docId, apiKey, table: options.table, theme, pageId,
+          verbose: options.verbose, hasSiteContext: !!siteContext,
+          persistTerminal: true,
+        });
+        trace(`orchestrator: consoleMain returned kind=${result.kind}`);
+        if (result.kind === "quit" || !siteContext) { return; }
+        // User asked to switch back to the site picker; clear per-doc
+        // state and loop.
+        docId = "";
+        pageId = undefined;
+        // Subsequent doc opens shouldn't auto-route to --table either:
+        // the user may pick a doc that doesn't have that table.
+        options.table = undefined;
+      }
+    } finally {
+      restoreTerminal();
+      // Print any error AFTER the alt screen is gone, otherwise the
+      // message gets wiped when the terminal restores its main buffer.
+      if (fatalError) {
+        console.error(fatalError);
+        process.exitCode = 1;
+      }
+      const dump = drainTrace();
+      if (dump) {
+        process.stderr.write(dump + "\n");
+        const tracePath = getTracePath();
+        if (tracePath) { process.stderr.write(`(also saved to ${tracePath})\n`); }
+      }
+    }
   });
 
 program.parse();

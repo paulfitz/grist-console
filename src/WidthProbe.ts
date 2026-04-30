@@ -42,6 +42,17 @@ export function setReplayHandler(fn: (data: Buffer) => Promise<void>): void {
 }
 
 /**
+ * Cancel any pending probe and forget the replay handler. Called on
+ * teardown so a debounced probe can't fire on stale state after the
+ * main event loop has handed off (e.g. consoleMain → site picker).
+ */
+export function resetProbeState(): void {
+  if (_probeTimer) { clearTimeout(_probeTimer); _probeTimer = null; }
+  _replayToHandler = null;
+  _probingBuffer.length = 0;
+}
+
+/**
  * Schedule a probe for unmeasured characters in the current view.
  * Debounced so it only fires when the UI is quiet (~400ms idle).
  */
