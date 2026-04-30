@@ -94,14 +94,106 @@ export function applyPasteToEdit(state: AppState, content: string): void {
 }
 
 /**
- * Parse a raw keypress buffer into a key name.
+ * Map a CSI/SS3 modifier digit to a prefix string. xterm uses 1+(shift|alt|ctrl)
+ * with shift=1, alt=2, ctrl=4: `2`=shift, `3`=alt, `5`=ctrl, `6`=ctrl-shift, etc.
+ */
+function modifierPrefix(mod: number): string {
+  switch (mod) {
+    case 2: return "shift-";
+    case 3: return "alt-";
+    case 4: return "shift-alt-";
+    case 5: return "ctrl-";
+    case 6: return "ctrl-shift-";
+    case 7: return "ctrl-alt-";
+    case 8: return "ctrl-shift-alt-";
+    default: return "";
+  }
+}
+
+/**
+ * Map a tilde-style CSI code (the N in `ESC [ N ~`) to a key name.
+ */
+function tildeCodeToKey(code: number): string {
+  switch (code) {
+    case 1:  return "home";       // some terminals
+    case 2:  return "insert";
+    case 3:  return "delete";
+    case 4:  return "end";
+    case 5:  return "pageup";
+    case 6:  return "pagedown";
+    case 15: return "f5";
+    case 17: return "f6";
+    case 18: return "f7";
+    case 19: return "f8";
+    case 20: return "f9";
+    case 21: return "f10";
+    case 23: return "f11";
+    case 24: return "f12";
+    default: return "";
+  }
+}
+
+/**
+ * Parse a raw keypress buffer into a key name. Returns one of:
+ *  - a single printable codepoint (e.g. "a", "5", " "),
+ *  - a multi-byte UTF-8 sequence as its decoded string,
+ *  - a named key: "up" "down" "left" "right" "home" "end" "pageup" "pagedown"
+ *    "delete" "insert" "tab" "shift-tab" "enter" "backspace" "escape"
+ *    "f1".."f12",
+ *  - a modifier-prefixed name: "ctrl-<x>", "alt-<x>", "shift-<x>",
+ *    "ctrl-shift-<x>" etc. for arrows, F-keys, home/end, and ASCII letters.
+ *  - "unknown" if the sequence isn't recognised.
+ *
+ * Modifier-prefixed Ctrl/Alt/Shift+arrow and F-key sequences require either
+ * xterm's modifyOtherKeys or kitty's CSI-u protocol on the terminal side;
+ * this function decodes them when present but doesn't enable them.
  */
 function parseKey(buf: Buffer): string {
-  // Arrow keys and special keys
   if (buf[0] === 0x1b) {
+    if (buf.length === 1) { return "escape"; }
+
+    // CSI sequences: ESC [ ...
     if (buf[1] === 0x5b) {
       // Shift-Tab: ESC [ Z
       if (buf[2] === 0x5a) { return "shift-tab"; }
+
+      // Modifier-prefixed cursor / F1-F4 keys: ESC [ 1 ; M <letter>
+      if (buf[2] === 0x31 && buf[3] === 0x3b && buf.length >= 6) {
+        const prefix = modifierPrefix(buf[4] - 0x30);
+        if (prefix) {
+          switch (buf[5]) {
+            case 0x41: return prefix + "up";
+            case 0x42: return prefix + "down";
+            case 0x43: return prefix + "right";
+            case 0x44: return prefix + "left";
+            case 0x48: return prefix + "home";
+            case 0x46: return prefix + "end";
+            case 0x50: return prefix + "f1";
+            case 0x51: return prefix + "f2";
+            case 0x52: return prefix + "f3";
+            case 0x53: return prefix + "f4";
+          }
+        }
+      }
+
+      // Tilde-form keys (with optional modifier): ESC [ N ~  or  ESC [ N ; M ~
+      // Covers PgUp/PgDn/Delete/Insert/Home/End and F5-F12.
+      if (buf[2] >= 0x30 && buf[2] <= 0x39) {
+        let i = 2;
+        while (i < buf.length && buf[i] !== 0x7e) { i++; }
+        if (i < buf.length && i > 2) {
+          const inner = buf.slice(2, i).toString("ascii");
+          const parts = inner.split(";");
+          const code = parseInt(parts[0], 10);
+          const key = tildeCodeToKey(code);
+          if (key) {
+            const mod = parts[1] ? parseInt(parts[1], 10) : 1;
+            return modifierPrefix(mod) + key;
+          }
+        }
+      }
+
+      // Plain CSI single-letter cursor keys: ESC [ <letter>
       switch (buf[2]) {
         case 0x41: return "up";
         case 0x42: return "down";
@@ -109,18 +201,42 @@ function parseKey(buf: Buffer): string {
         case 0x44: return "left";
         case 0x48: return "home";
         case 0x46: return "end";
-        case 0x35: if (buf[3] === 0x7e) { return "pageup"; } break;
-        case 0x36: if (buf[3] === 0x7e) { return "pagedown"; } break;
-        case 0x33: if (buf[3] === 0x7e) { return "delete"; } break;
       }
+      return "unknown";
     }
-    if (buf.length === 1) { return "escape"; }
+
+    // SS3 sequences: ESC O ...  -- F1-F4 commonly arrive this way.
+    if (buf[1] === 0x4f) {
+      switch (buf[2]) {
+        case 0x50: return "f1";
+        case 0x51: return "f2";
+        case 0x52: return "f3";
+        case 0x53: return "f4";
+      }
+      return "unknown";
+    }
+
+    // ESC + printable = Alt+<char>. Distinguishes from the ESC-followed-by-CSI
+    // forms above by buffer length: those start with ESC [ or ESC O.
+    if (buf.length === 2 && buf[1] >= 0x20 && buf[1] < 0x7f) {
+      return "alt-" + String.fromCharCode(buf[1]);
+    }
+
     return "unknown";
   }
+
   if (buf[0] === 0x03) { return "ctrl-c"; }
   if (buf[0] === 0x0d) { return "enter"; }
   if (buf[0] === 0x7f) { return "backspace"; }
+  if (buf[0] === 0x08) { return "backspace"; }   // Ctrl-H is also backspace
   if (buf[0] === 0x09) { return "tab"; }
+
+  // Other Ctrl+letter values. Skip ones already handled (Tab, Enter, Esc,
+  // Backspace, Ctrl-C). 0x01-0x1a map to ctrl-a..ctrl-z.
+  if (buf.length === 1 && buf[0] >= 0x01 && buf[0] <= 0x1a) {
+    return "ctrl-" + String.fromCharCode(buf[0] + 0x60);
+  }
+
   if (buf.length === 1 && buf[0] >= 0x20 && buf[0] < 0x7f) {
     return String.fromCharCode(buf[0]);
   }
@@ -129,6 +245,21 @@ function parseKey(buf: Buffer): string {
     return buf.toString("utf8");
   }
   return "unknown";
+}
+
+/**
+ * Is this key name a printable single character (or a multi-byte UTF-8
+ * codepoint) that should be inserted into the focused cell when the user
+ * is on a grid? True for letters, digits, punctuation, accented chars.
+ * False for named keys ("up", "f5"), modifier-prefixed keys, "escape" etc.
+ */
+function isPrintableKey(key: string): boolean {
+  if (key.length === 1) {
+    const c = key.charCodeAt(0);
+    return c >= 0x20 && c < 0x7f;
+  }
+  // Multi-byte UTF-8: first codepoint is non-ASCII printable.
+  return key.length > 1 && key.charCodeAt(0) > 0x7f;
 }
 
 /**
@@ -164,6 +295,7 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
   switch (key) {
     case "enter":
       return { type: "select_table" };
+    case "tab":
     case "p":
     case "escape":
       if (state.pages.length > 0) {
@@ -171,8 +303,10 @@ function handleTablePickerKey(key: string, state: AppState): InputAction {
       }
       return { type: "none" };
     case "T":
+    case "f12":
       return { type: "cycle_theme" };
     case "q":
+    case "ctrl-q":
     case "ctrl-c":
       return { type: "quit" };
     default:
@@ -268,11 +402,15 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
   switch (key) {
     case "enter":
       return { type: "select_page" };
+    case "tab":
     case "t":
+    case "f4":
       return { type: "switch_to_tables" };
     case "T":
+    case "f12":
       return { type: "cycle_theme" };
     case "q":
+    case "ctrl-q":
     case "ctrl-c":
       return { type: "quit" };
     default:
@@ -281,44 +419,75 @@ function handlePagePickerKey(key: string, state: AppState): InputAction {
 }
 
 /**
- * Handle a keypress in multi-pane grid mode.
- */
-/**
- * Movement + edit triggers shared by the multi-pane grid and the overlay view.
- * Returns an InputAction, or "none" if the key wasn't handled here so the caller
- * can try its mode-specific bindings.
+ * Movement + edit triggers shared by the multi-pane grid and the overlay
+ * view. Returns an InputAction, or "none" if the key wasn't recognised in
+ * this context.
+ *
+ * Keymap principle: in grid mode the user is "on" a cell, so any printable
+ * character starts editing that cell with the typed character as the new
+ * value (Excel/Grist parity). All commands therefore live on Ctrl-, Alt-,
+ * or function keys; bare letters never trigger commands here.
  */
 function handleGridViewKey(
   key: string, state: AppState, pane: PaneState, availWidth: number,
 ): InputAction {
   const termRows = process.stdout.rows || 24;
-  const pageSize = Math.max(1, termRows - 5);
+  const dataRows = Math.max(1, termRows - 5);
+  const pageSize = dataRows;
+  const hasCells = pane.rowIds.length > 0 && pane.columns.length > 0;
 
+  // Cell editing triggers.
+  switch (key) {
+    case "enter":
+    case "f2":
+      if (hasCells) { enterPaneEditMode(state, pane); }
+      return { type: "render" };
+    case "backspace":
+      // Start editing with an empty value (Grist parity).
+      if (hasCells) {
+        enterPaneEditMode(state, pane);
+        state.editValue = "";
+        state.editCursorPos = 0;
+      }
+      return { type: "render" };
+    case "delete":
+      // Clear the cell immediately, no edit prompt.
+      if (hasCells) {
+        enterPaneEditMode(state, pane);
+        state.editValue = "";
+        state.editCursorPos = 0;
+        return { type: "save_edit" };
+      }
+      return { type: "render" };
+  }
+
+  // Movement.
   switch (key) {
     case "up":
       if (pane.cursorRow > 0) {
         pane.cursorRow--;
-        if (pane.cursorRow < pane.scrollRow) {
-          pane.scrollRow = pane.cursorRow;
-        }
+        if (pane.cursorRow < pane.scrollRow) { pane.scrollRow = pane.cursorRow; }
       }
       return { type: "render" };
     case "down":
       if (pane.cursorRow < pane.rowIds.length - 1) {
         pane.cursorRow++;
-        const dataRows = Math.max(1, termRows - 5);
         if (pane.cursorRow >= pane.scrollRow + dataRows) {
           pane.scrollRow = pane.cursorRow - dataRows + 1;
         }
       }
       return { type: "render" };
     case "left":
+    case "shift-tab":
       if (pane.cursorCol > 0) {
         pane.cursorCol--;
         ensureColVisible(pane, availWidth);
       }
       return { type: "render" };
     case "right":
+    case "tab":
+      // Tab advances to the next cell in the row (Grist parity). The
+      // pane-switching role Tab used to play has moved to F6.
       if (pane.cursorCol < pane.columns.length - 1) {
         pane.cursorCol++;
         ensureColVisible(pane, availWidth);
@@ -336,33 +505,100 @@ function handleGridViewKey(
       );
       return { type: "render" };
     case "home":
+      // First column of current row (Excel parity).
+      pane.cursorCol = 0;
+      pane.scrollCol = 0;
+      return { type: "render" };
+    case "end":
+      // Last column of current row.
+      if (pane.columns.length > 0) {
+        pane.cursorCol = pane.columns.length - 1;
+        ensureColVisible(pane, availWidth);
+      }
+      return { type: "render" };
+    case "ctrl-home":
+      pane.cursorRow = 0;
+      pane.scrollRow = 0;
+      pane.cursorCol = 0;
+      pane.scrollCol = 0;
+      return { type: "render" };
+    case "ctrl-end":
+      pane.cursorRow = Math.max(0, pane.rowIds.length - 1);
+      pane.scrollRow = Math.max(0, pane.rowIds.length - pageSize);
+      if (pane.columns.length > 0) {
+        pane.cursorCol = pane.columns.length - 1;
+        ensureColVisible(pane, availWidth);
+      }
+      return { type: "render" };
+    case "ctrl-up":
+      // First record (Grist parity).
       pane.cursorRow = 0;
       pane.scrollRow = 0;
       return { type: "render" };
-    case "end":
+    case "ctrl-down":
       pane.cursorRow = Math.max(0, pane.rowIds.length - 1);
       pane.scrollRow = Math.max(0, pane.rowIds.length - pageSize);
       return { type: "render" };
-    case "enter":
-      if (pane.rowIds.length > 0 && pane.columns.length > 0) {
-        enterPaneEditMode(state, pane);
+    case "ctrl-left":
+      pane.cursorCol = 0;
+      pane.scrollCol = 0;
+      return { type: "render" };
+    case "ctrl-right":
+      if (pane.columns.length > 0) {
+        pane.cursorCol = pane.columns.length - 1;
+        ensureColVisible(pane, availWidth);
       }
       return { type: "render" };
-    case "a":
+  }
+
+  // Row operations. The Ctrl-Enter / Ctrl-Delete bindings need a terminal
+  // that supports modifyOtherKeys or the kitty keyboard protocol; F7 / F8
+  // are the universal fallbacks.
+  switch (key) {
+    case "ctrl-enter":
+    case "f7":
       return { type: "add_row" };
-    case "d":
-      if (pane.rowIds.length > 0) {
-        state.mode = "confirm_delete";
-      }
+    case "ctrl-delete":
+    case "ctrl-backspace":
+    case "f8":
+      if (pane.rowIds.length > 0) { state.mode = "confirm_delete"; }
       return { type: "render" };
-    case "v":
+  }
+
+  // Top-level commands.
+  switch (key) {
+    case "f3":
       return { type: "view_cell" };
-    case "q":
+    case "ctrl-z":
+      return { type: "undo" };
+    case "ctrl-y":
+    case "ctrl-shift-z":
+      return { type: "redo" };
+    case "ctrl-r":
+    case "f5":
+      return { type: "refresh" };
+    case "f4":
+      return { type: "switch_to_tables" };
+    case "f12":
+      return { type: "cycle_theme" };
+    case "escape":
+      return { type: "switch_to_pages" };
+    case "ctrl-q":
     case "ctrl-c":
       return { type: "quit" };
-    default:
-      return { type: "none" };
   }
+
+  // Anything printable starts editing the focused cell with that
+  // character as the initial value. This is the core "spreadsheet feel"
+  // change: pressing `a` no longer adds a row, it puts `a` in the cell.
+  if (isPrintableKey(key) && hasCells) {
+    enterPaneEditMode(state, pane);
+    state.editValue = key;
+    state.editCursorPos = key.length;
+    return { type: "render" };
+  }
+
+  return { type: "none" };
 }
 
 function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
@@ -374,29 +610,20 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
     return handleCardPaneKey(key, state, pane, leaf);
   }
 
+  // Pane switching: F6 / Shift-F6. Tab/Shift-Tab now advance the cell
+  // cursor instead, matching how Tab behaves in a real spreadsheet.
   switch (key) {
-    case "tab":
+    case "f6":
       return { type: "focus_next_pane" };
-    case "shift-tab":
+    case "shift-f6":
       return { type: "focus_prev_pane" };
-    case "u":
-      return { type: "undo" };
-    case "U":
-      return { type: "redo" };
-    case "escape":
-    case "p":
-      return { type: "switch_to_pages" };
-    case "r":
-      return { type: "refresh" };
-    case "t":
-      return { type: "switch_to_tables" };
-    case "T":
-      return { type: "cycle_theme" };
   }
 
-  // Number keys 1-9: open collapsed widget overlay
-  if (/^[1-9]$/.test(key) && state.collapsedPaneIndices.length > 0) {
-    const idx = parseInt(key, 10) - 1;
+  // Alt+1..9: open a collapsed widget full-screen. Was 1..9, but plain
+  // digits now go into the focused cell.
+  const altDigit = /^alt-([1-9])$/.exec(key);
+  if (altDigit && state.collapsedPaneIndices.length > 0) {
+    const idx = parseInt(altDigit[1], 10) - 1;
     if (idx < state.collapsedPaneIndices.length) {
       state.overlayPaneIndex = state.collapsedPaneIndices[idx];
       state.mode = "overlay";
@@ -410,53 +637,59 @@ function handleMultiPaneGridKey(key: string, state: AppState): InputAction {
 
 /**
  * Handle keys for a card (single/detail) pane.
- * Up/down navigates fields, left/right switches records.
+ *
+ * Layout: each row of the card is one field (label + value). Up/Down moves
+ * between fields; Tab/Shift-Tab is a form-style alias for the same. Records
+ * advance with Ctrl+Up/Ctrl+Down (mirroring grid mode), and Left/Right are
+ * kept as a convenience.
  */
 function handleCardPaneKey(
   key: string, state: AppState, pane: PaneState, leaf?: LayoutNode
 ): InputAction {
+  const hasCells = pane.rowIds.length > 0 && pane.columns.length > 0;
+  const fieldRows = leaf ? leaf.height - 1 : 10;
+
+  // Cell editing triggers.
   switch (key) {
-    case "tab":
-      return { type: "focus_next_pane" };
-    case "shift-tab":
-      return { type: "focus_prev_pane" };
+    case "enter":
+    case "f2":
+      if (hasCells) { enterPaneEditMode(state, pane); }
+      return { type: "render" };
+    case "backspace":
+      if (hasCells) {
+        enterPaneEditMode(state, pane);
+        state.editValue = "";
+        state.editCursorPos = 0;
+      }
+      return { type: "render" };
+    case "delete":
+      if (hasCells) {
+        enterPaneEditMode(state, pane);
+        state.editValue = "";
+        state.editCursorPos = 0;
+        return { type: "save_edit" };
+      }
+      return { type: "render" };
+  }
+
+  // Field navigation (within the current record).
+  switch (key) {
     case "up":
-      // Move to previous field
+    case "shift-tab":
       if (pane.cursorCol > 0) {
         pane.cursorCol--;
-        if (pane.cursorCol < pane.scrollCol) {
-          pane.scrollCol = pane.cursorCol;
-        }
+        if (pane.cursorCol < pane.scrollCol) { pane.scrollCol = pane.cursorCol; }
       }
       return { type: "render" };
     case "down":
-      // Move to next field
+    case "tab":
       if (pane.cursorCol < pane.columns.length - 1) {
         pane.cursorCol++;
-        // scrollCol is used as field scroll offset in card mode
-        // Leaf height minus title bar = available field rows
-        const fieldRows = leaf ? leaf.height - 1 : 10;
         if (pane.cursorCol >= pane.scrollCol + fieldRows) {
           pane.scrollCol = pane.cursorCol - fieldRows + 1;
         }
       }
       return { type: "render" };
-    case "left": {
-      // Previous record — if linked, move the source pane's cursor instead
-      const targetLeft = findCardRecordTarget(state, pane);
-      if (targetLeft.cursorRow > 0) {
-        targetLeft.cursorRow--;
-      }
-      return { type: "render" };
-    }
-    case "right": {
-      // Next record — if linked, move the source pane's cursor instead
-      const targetRight = findCardRecordTarget(state, pane);
-      if (targetRight.cursorRow < targetRight.rowIds.length - 1) {
-        targetRight.cursorRow++;
-      }
-      return { type: "render" };
-    }
     case "home":
       pane.cursorCol = 0;
       pane.scrollCol = 0;
@@ -464,46 +697,85 @@ function handleCardPaneKey(
     case "end":
       pane.cursorCol = Math.max(0, pane.columns.length - 1);
       return { type: "render" };
+  }
+
+  // Record navigation. If this card pane is linked, move the source
+  // pane's cursor instead so the link relation drives the change.
+  switch (key) {
+    case "left":
+    case "ctrl-up":
     case "pageup": {
-      // Previous record (same as left for cards)
-      const targetPU = findCardRecordTarget(state, pane);
-      if (targetPU.cursorRow > 0) { targetPU.cursorRow--; }
+      const target = findCardRecordTarget(state, pane);
+      if (target.cursorRow > 0) { target.cursorRow--; }
       return { type: "render" };
     }
+    case "right":
+    case "ctrl-down":
     case "pagedown": {
-      // Next record (same as right for cards)
-      const targetPD = findCardRecordTarget(state, pane);
-      if (targetPD.cursorRow < targetPD.rowIds.length - 1) { targetPD.cursorRow++; }
+      const target = findCardRecordTarget(state, pane);
+      if (target.cursorRow < target.rowIds.length - 1) { target.cursorRow++; }
       return { type: "render" };
     }
-    case "enter":
-      if (pane.rowIds.length > 0 && pane.columns.length > 0) {
-        enterPaneEditMode(state, pane);
-      }
+    case "ctrl-home": {
+      const target = findCardRecordTarget(state, pane);
+      target.cursorRow = 0;
       return { type: "render" };
-    case "a":
+    }
+    case "ctrl-end": {
+      const target = findCardRecordTarget(state, pane);
+      target.cursorRow = Math.max(0, target.rowIds.length - 1);
+      return { type: "render" };
+    }
+  }
+
+  // Pane switching: F6 / Shift-F6 (Tab is now field-nav above).
+  switch (key) {
+    case "f6":
+      return { type: "focus_next_pane" };
+    case "shift-f6":
+      return { type: "focus_prev_pane" };
+  }
+
+  // Row ops + top-level commands. Same bindings as grid mode.
+  switch (key) {
+    case "ctrl-enter":
+    case "f7":
       return { type: "add_row" };
-    case "d":
-      if (pane.rowIds.length > 0) {
-        state.mode = "confirm_delete";
-      }
+    case "ctrl-delete":
+    case "ctrl-backspace":
+    case "f8":
+      if (pane.rowIds.length > 0) { state.mode = "confirm_delete"; }
       return { type: "render" };
+    case "f3":
+      return { type: "view_cell" };
+    case "ctrl-z":
+      return { type: "undo" };
+    case "ctrl-y":
+    case "ctrl-shift-z":
+      return { type: "redo" };
+    case "ctrl-r":
+    case "f5":
+      return { type: "refresh" };
+    case "f4":
+      return { type: "switch_to_tables" };
+    case "f12":
+      return { type: "cycle_theme" };
     case "escape":
       return { type: "switch_to_pages" };
-    case "r":
-      return { type: "refresh" };
-    case "p":
-      return { type: "switch_to_pages" };
-    case "t":
-      return { type: "switch_to_tables" };
-    case "T":
-      return { type: "cycle_theme" };
-    case "q":
+    case "ctrl-q":
     case "ctrl-c":
       return { type: "quit" };
-    default:
-      return { type: "none" };
   }
+
+  // Printable char → start editing the focused field with that char.
+  if (isPrintableKey(key) && hasCells) {
+    enterPaneEditMode(state, pane);
+    state.editValue = key;
+    state.editCursorPos = key.length;
+    return { type: "render" };
+  }
+
+  return { type: "none" };
 }
 
 function enterPaneEditMode(state: AppState, pane: PaneState): void {
@@ -533,9 +805,8 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
 
   switch (key) {
     case "escape":
-    case "v":
-    case "q":
-      // Return to previous mode
+    case "f3":
+      // Close the viewer, return to whatever was underneath.
       state.mode = state.overlayPaneIndex !== null ? "overlay" : "grid";
       state.cellViewerContent = "";
       state.cellViewerScroll = 0;
@@ -575,13 +846,26 @@ function handleCellViewerKey(key: string, state: AppState): InputAction {
       }
       return { type: "render" };
     }
-    case "o": {
-      // Cycle through URLs found in cell content
+    case "tab": {
+      // Cycle forward through URLs found in cell content.
       const urls = extractUrls(state.cellViewerContent);
       if (urls.length === 0) { return { type: "none" }; }
       state.cellViewerLinkIndex = (state.cellViewerLinkIndex + 1) % urls.length;
       return { type: "render" };
     }
+    case "shift-tab": {
+      // Shift-Tab from no selection wraps to the last link (so a user
+      // who wants the last URL doesn't have to Tab through every one).
+      const urls = extractUrls(state.cellViewerContent);
+      if (urls.length === 0) { return { type: "none" }; }
+      state.cellViewerLinkIndex = state.cellViewerLinkIndex < 0
+        ? urls.length - 1
+        : (state.cellViewerLinkIndex - 1 + urls.length) % urls.length;
+      return { type: "render" };
+    }
+    case "ctrl-c":
+    case "ctrl-q":
+      return { type: "quit" };
     default:
       return { type: "none" };
   }

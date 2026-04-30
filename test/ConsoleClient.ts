@@ -1481,9 +1481,14 @@ describe("ConsoleClient", function() {
       return state;
     }
 
-    it("pressing 1 opens overlay for first collapsed widget", function() {
+    // Alt+digit (ESC + digit byte) opens the Nth collapsed widget. Plain
+    // digits go into the focused cell now, so the binding moved to Alt.
+    const ALT_1 = Buffer.from([0x1b, 0x31]);
+    const ALT_5 = Buffer.from([0x1b, 0x35]);
+
+    it("Alt+1 opens overlay for first collapsed widget", function() {
       const state = makeCollapsedState();
-      const action = handleKeypress(Buffer.from("1"), state);
+      const action = handleKeypress(ALT_1, state);
       assert.equal(action.type, "render");
       assert.equal(state.mode, "overlay");
       assert.equal(state.overlayPaneIndex, 1);
@@ -1491,7 +1496,7 @@ describe("ConsoleClient", function() {
 
     it("pressing Escape in overlay returns to grid", function() {
       const state = makeCollapsedState();
-      handleKeypress(Buffer.from("1"), state);
+      handleKeypress(ALT_1, state);
       assert.equal(state.mode, "overlay");
       const action = handleKeypress(Buffer.from("\x1b"), state);
       assert.equal(action.type, "close_overlay");
@@ -1499,7 +1504,7 @@ describe("ConsoleClient", function() {
 
     it("arrow keys navigate in overlay pane", function() {
       const state = makeCollapsedState();
-      handleKeypress(Buffer.from("1"), state); // open overlay
+      handleKeypress(ALT_1, state); // open overlay
       assert.equal(state.panes[1].cursorRow, 0);
       handleKeypress(Buffer.from("\x1b[B"), state); // down
       assert.equal(state.panes[1].cursorRow, 1);
@@ -1507,16 +1512,16 @@ describe("ConsoleClient", function() {
       assert.equal(state.panes[1].cursorRow, 2);
     });
 
-    it("number key beyond collapsed count does nothing", function() {
+    it("Alt+digit beyond collapsed count does nothing", function() {
       const state = makeCollapsedState();
-      const action = handleKeypress(Buffer.from("5"), state);
+      const action = handleKeypress(ALT_5, state);
       assert.equal(action.type, "none");
       assert.equal(state.mode, "grid");
     });
 
     it("focusedPane stays on visible pane during overlay", function() {
       const state = makeCollapsedState();
-      handleKeypress(Buffer.from("1"), state);
+      handleKeypress(ALT_1, state);
       assert.equal(state.focusedPane, 0, "focusedPane should remain on visible pane");
       assert.equal(state.overlayPaneIndex, 1);
     });
@@ -2018,26 +2023,39 @@ describe("ConsoleClient", function() {
       return state;
     }
 
-    it("o cycles through links", function() {
+    // URL cycling moved from `o` to Tab (forward) / Shift-Tab (back), so
+    // `o` is free to be a regular printable character.
+    const TAB = Buffer.from([0x09]);
+    const SHIFT_TAB = Buffer.from([0x1b, 0x5b, 0x5a]);
+
+    it("Tab cycles through links", function() {
       const state = makeCellViewerState("See https://example.com and https://other.com");
-      handleKeypress(Buffer.from("o"), state);
+      handleKeypress(TAB, state);
       assert.equal(state.cellViewerLinkIndex, 0);
-      handleKeypress(Buffer.from("o"), state);
+      handleKeypress(TAB, state);
       assert.equal(state.cellViewerLinkIndex, 1);
-      handleKeypress(Buffer.from("o"), state);
+      handleKeypress(TAB, state);
       assert.equal(state.cellViewerLinkIndex, 0); // wraps
     });
 
-    it("o does nothing when no links", function() {
+    it("Shift-Tab cycles backwards through links", function() {
+      const state = makeCellViewerState("See https://example.com and https://other.com");
+      handleKeypress(SHIFT_TAB, state);
+      assert.equal(state.cellViewerLinkIndex, 1); // wraps to last
+      handleKeypress(SHIFT_TAB, state);
+      assert.equal(state.cellViewerLinkIndex, 0);
+    });
+
+    it("Tab does nothing when no links", function() {
       const state = makeCellViewerState("no links here");
-      const action = handleKeypress(Buffer.from("o"), state);
+      const action = handleKeypress(TAB, state);
       assert.equal(action.type, "none");
       assert.equal(state.cellViewerLinkIndex, -1);
     });
 
     it("Enter opens selected link", function() {
       const state = makeCellViewerState("Visit https://example.com now");
-      handleKeypress(Buffer.from("o"), state); // select first link
+      handleKeypress(TAB, state); // select first link
       const action = handleKeypress(Buffer.from("\r"), state);
       assert.equal(action.type, "open_url");
       if (action.type === "open_url") {
@@ -2058,7 +2076,7 @@ describe("ConsoleClient", function() {
 
     it("Escape closes viewer and resets link index", function() {
       const state = makeCellViewerState("https://example.com");
-      handleKeypress(Buffer.from("o"), state);
+      handleKeypress(TAB, state);
       assert.equal(state.cellViewerLinkIndex, 0);
       handleKeypress(Buffer.from("\x1b"), state);
       assert.equal(state.mode, "grid");

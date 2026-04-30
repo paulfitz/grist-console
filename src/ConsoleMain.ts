@@ -116,7 +116,7 @@ export async function consoleMain(options: {
   // Surface unexpected disconnects in the status line. Subsequent edits
   // will fast-fail rather than hanging for 30s waiting for a response.
   conn.onDisconnect((reason) => {
-    state.statusMessage = `Disconnected: ${reason}. Press q to quit.`;
+    state.statusMessage = `Disconnected: ${reason}. Press Ctrl+C to quit.`;
     doRender(state);
   });
 

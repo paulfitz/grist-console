@@ -138,9 +138,9 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
     lines.push("");
   } else {
     const urls = extractUrls(state.cellViewerContent);
-    const urlHint = urls.length > 0 ? "  o:link" : "";
+    const urlHint = urls.length > 0 ? "  Tab:link" : "";
     const enterHint = state.cellViewerLinkIndex >= 0 ? "Enter:open" : "Enter:edit";
-    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc/v:close${scrollInfo}`));
+    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc:close${scrollInfo}`));
     if (state.cellViewerLinkIndex >= 0 && state.cellViewerLinkIndex < urls.length) {
       lines.push(`link ${state.cellViewerLinkIndex + 1}/${urls.length}: ${urls[state.cellViewerLinkIndex]}`);
     } else {
@@ -204,7 +204,7 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   }
 
   // Key help
-  const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
+  const pagesHint = state.pages.length > 0 ? "  Tab:pages" : "";
   lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}  T:theme  q:quit`));
 
   // Status
@@ -305,8 +305,8 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
   } else if (state.mode === "confirm_delete") {
     lines.push(t.helpBar(`Delete row ${pane.rowIds[pane.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
-    const pagesHint = state.pages.length > 0 ? "  p:pages" : "";
-    lines.push(t.helpBar(`\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  a:add  d:del  u:undo  t:tables${pagesHint}  T:theme  q:quit`));
+    const pagesHint = state.pages.length > 0 ? "  Esc:pages" : "";
+    lines.push(t.helpBar(`type:edit  Enter:edit  F3:view  ^Enter:add  ^Del:del  ^Z:undo  F4:tables${pagesHint}  ^C:quit`));
   }
 
   // Status
@@ -358,7 +358,7 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
     lines.push("");
   }
 
-  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  t:tables  T:theme  q:quit"));
+  lines.push(t.helpBar("\u2191\u2193:select  Enter:open  Tab:tables  T:theme  q:quit"));
   lines.push(getStatusLine(state, termCols));
 
   // Clear to end of line after each line to overwrite any stale content

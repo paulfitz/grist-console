@@ -90,9 +90,9 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
     output += MOVE_TO(footerRow, 0) +
       t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`) + CLEAR_LINE;
   } else {
-    const collapsedHint = hasCollapsed ? "  1-9:widget" : "";
+    const collapsedHint = hasCollapsed ? "  Alt-#:widget" : "";
     output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`\u2191\u2193\u2190\u2192:move  Tab:pane  Enter:edit  v:view  a:add  d:del  u:undo  p:pages${collapsedHint}  T:theme  q:quit`) +
+      t.helpBar(`type:edit  Tab:cell  F6:pane  Enter:edit  F3:view  ^Enter:add  ^Z:undo${collapsedHint}  Esc:pages  ^C:quit`) +
       CLEAR_LINE;
   }
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;

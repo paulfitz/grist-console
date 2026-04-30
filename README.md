@@ -1,41 +1,61 @@
 # grist-console
 
-A terminal UI for [Grist](https://www.getgrist.com/) documents. Browse pages, edit cells, watch live updates — all in your terminal, like tmux for spreadsheets.
+A spreadsheet in your terminal, talking to a [Grist](https://www.getgrist.com/) document over the network. Browse pages, edit cells, watch other people's edits arrive in real time. Think tmux for spreadsheets.
 
-This is a fun side project, not a serious productivity tool. Heavy use of vibe coding.
+This is a fun side project, not a serious productivity tool. There is a goat theme.
 
-Works with both private documents (using an API key) and publicly shared documents (no key needed).
+## Trying it out
 
-## Install
+You need Node. Open a terminal and run:
 
 ```bash
 npx grist-console https://templates.getgrist.com/5iMYwmESm33J/Rental-Management
 ```
 
-Or install globally:
+That opens a public Grist template. You should see a list of pages. Pick one with the arrow keys and Enter, and you're in.
+
+If you want it around for longer:
 
 ```bash
 npm install -g grist-console
-grist-console https://templates.getgrist.com/5iMYwmESm33J/Rental-Management
+grist-console <a-grist-doc-url>
 ```
 
-You can also pass `--api-key <key>` or set `GRIST_API_KEY`. Use `--table <name>` to jump straight to a specific table. Use `--theme <name>` to set the color theme. Use `--verbose` to log the connection handshake and, on exit, a report of any emoji width mismatches detected in your terminal.
+That gives you a `grist-console` command on your `$PATH`.
 
-URLs with page suffixes are supported — `/p/3` opens that page directly:
+## Pointing it at your own doc
+
+If your doc is public (a "Public access" share link from Grist), just paste the URL. No setup.
+
+If your doc is private, you need an API key. Get one from your Grist profile page, then:
+
+```bash
+grist-console <doc-url> --api-key <your-key>
+```
+
+Or set `GRIST_API_KEY` in your environment so you don't have to pass it every time.
+
+A few extra flags worth knowing:
+
+* `--table <name>` jumps straight to a single table, skipping the page picker.
+* `--theme <name>` picks a color theme. (More on those below.)
+* `--verbose` prints connection details and, on exit, a small report about emoji widths in your terminal.
+
+URLs ending in `/p/3` open page 3 directly:
 
 ```bash
 grist-console https://templates.getgrist.com/hQHXqAQXceeQ/Personal-Notebook/p/32
 ```
 
-You can also point at a JSON config file with `doc` (URL) and optional `key` (API key) fields:
+Got several docs you flip between? Save a tiny JSON file with `doc` (URL) and optional `key` (API key), then:
 
 ```bash
 grist-console mydoc.json
 ```
 
-## What it looks like
+## Getting around
 
-Opening the [Rental Management](https://templates.getgrist.com/5iMYwmESm33J/Rental-Management) template:
+You'll start in the page picker:
 
 ```
  Grist Console — Select a Page
@@ -51,10 +71,10 @@ Opening the [Rental Management](https://templates.getgrist.com/5iMYwmESm33J/Rent
     Income and Expense breakdown
     GristDocTour
 
- ↑↓:select  Enter:open  t:tables  T:theme  q:quit
+ ↑↓:select  Enter:open  Tab:tables  T:theme  q:quit
 ```
 
-Select a page to get the same multi-pane layout you'd see in the browser — grid on top, card detail below, with section linking:
+Move with the arrow keys. Press Enter to open a page. You get the same multi-pane layout you'd see in the browser, sometimes a grid on top with a card detail below, sometimes side by side, sometimes a tray of collapsed widgets at the top:
 
 ```
  Apartments (6)
@@ -70,68 +90,89 @@ Select a page to get the same multi-pane layout you'd see in the browser — gri
  Area          │ 700
  Bathrooms     │ 1
  Additional    │ Facing back, access to backyard
- ↑↓←→:move  Tab:pane  Enter:edit  a:add  d:del  p:pages  T:theme  q:quit
 ```
 
-Title bars and cursor are highlighted in your terminal (reverse video).
+Move the cursor with arrows. The bottom of the screen always shows the most useful keys for whatever mode you're in.
 
-## What works
+## Editing cells
 
-- **Pages and multi-pane layouts.** Select a page, get the same split-pane arrangement you'd see in the browser. Tab/Shift-Tab switches focus between panes (in visual order).
-- **Grid views.** Arrow keys, scrolling, column headers, row counts.
-- **Card views.** Field label/value pairs. Left/right flips between records.
-- **Section linking.** Select a person in one pane, see their projects in another. Supports RefList columns (filters by any row ID in the list).
-- **Sorting.** Sections use their configured `sortColRefs` (multi-column, ascending/descending). When none is set, falls back to Grist's natural `manualSort` order.
-- **Filtering.** Section filters from `_grist_Filters` are applied: inclusion, exclusion, numeric ranges, and list-column aware (ChoiceList, RefList).
-- **Collapsed widgets.** Pages with minimized sections show a tray at the top; press `1`-`9` to open any collapsed widget full-screen, Escape to dismiss.
-- **Cell viewer.** Press `v` to see the full content of a cell in a scrollable full-screen view. Press `o` to cycle through embedded URLs and Enter to open the selected link. Enter without a selected link switches to editing.
-- **Editing.** Enter to edit, Enter to save. Text, numbers, dates, booleans, references. Terminal cursor shows insertion point; edit text scrolls horizontally within the cell so the cursor stays visible.
-- **Add/delete rows.** `a` to add, `d` to delete.
-- **Undo/redo.** `u` to undo your last action, `U` (shift-u) to redo. Only actions you made during the current session are undoable; uses Grist's `applyUserActionsById` like the web client.
-- **Live updates.** Changes from other users appear in real time.
-- **Formatting.** Dates, numbers, and currencies display using the document's format settings (date format strings, currency mode, decimal places, etc.).
-- **Reference display.** Ref and RefList columns show the display value (e.g. a name) instead of raw row IDs.
-- **Choice colors.** Choice and ChoiceList columns render with their configured fill/text colors using 24-bit ANSI color.
-- **Emoji width handling.** At startup and in the background, the terminal is probed via cursor-position queries to measure actual rendered widths of emoji. If the terminal supports [DEC mode 2027](https://github.com/contour-terminal/terminal-unicode-core) (Kitty, Ghostty, WezTerm, foot, Contour, recent Windows Terminal), that's enabled for better grapheme-cluster width handling.
+It works like Excel or Google Sheets. Three ways to start editing the cell under your cursor:
+
+1. **Just type.** Whatever you type replaces the cell. Hit Enter to save, Escape to cancel.
+2. **Press Enter (or F2)** to edit the cell while keeping its current value. Useful for tweaking, not replacing.
+3. **Press Backspace** to start editing with the cell empty. **Press Delete** to clear the cell with no edit prompt at all.
+
+When you save (Enter), the change goes to the server immediately and other people see it. Mistakes are fine: **Ctrl+Z** undoes your last edit, **Ctrl+Y** (or Ctrl+Shift+Z) redoes it. Only edits made in this session are undoable.
+
+To add a row, **Ctrl+Enter**. (Or **F7** if your terminal eats Ctrl+Enter, see the keys section.) To delete one, **Ctrl+Delete** or **F8**, then `y` to confirm.
+
+## Moving around
+
+* Arrow keys move one cell at a time.
+* **Tab** and **Shift+Tab** move to the next or previous cell in the row, like in a real spreadsheet.
+* **Page Up** and **Page Down** scroll a screen at a time.
+* **Home** and **End** jump to the first or last column of the current row.
+* **Ctrl+Home** and **Ctrl+End** jump to the corners of the table.
+* **Ctrl+Up** / **Ctrl+Down** jump to the first or last record.
+
+When a page has more than one widget on it, **F6** moves focus to the next pane, **Shift+F6** to the previous one. If the page has collapsed widgets in the tray at the top, **Alt+1** through **Alt+9** open one of them full screen. Escape closes the overlay.
+
+## Card views
+
+Some pages have card views (one record per page, fields stacked vertically). Up and Down walk through the fields. Left and Right (or Ctrl+Up / Ctrl+Down) flip through records. Everything else works the same as a grid: type to edit, Enter to save, Ctrl+Z to undo.
+
+If the card is linked to another widget on the page, flipping records will move the linked widget's cursor too. That's section linking.
+
+## Looking at long cells
+
+Some cells have a paragraph of text or a URL or a markdown blob in them. Press **F3** to open a full-screen viewer with scrolling. Up, Down, Page Up, Page Down, Home, End all scroll. **Tab** cycles through any URLs found in the cell, and Enter opens the highlighted one in your browser. Escape (or F3 again) closes the viewer.
+
+## Quitting
+
+From a picker, press **q**.
+
+From a grid or card view, **q** goes into the cell (it's just a letter now). Use **Ctrl+C** or **Ctrl+Q** to quit. Or press Escape to back out to the page picker first, then `q`.
 
 ## Themes
 
-Press `T` to cycle through themes, or use `--theme <name>`:
+There are eleven of them. Cycle with **F12** (or **T** while you're in a picker), or pick one up front with `--theme <name>`:
 
-| Theme | Description |
-|-------|-------------|
-| `default` | Standard terminal look — bold headers, Unicode box-drawing |
-| `visicalc` | Green phosphor with inverse-video "inverted L" frame and a `/slash  C !` status chrome |
-| `lotus` | White on blue, Lotus 1-2-3 style |
-| `dos` | IBM PC / Norton Commander — CP437 double-line borders (`╔═╗║╚╝╠╣╦╩╬`), yellow-on-blue chrome, `╡ ╞` frame fillers |
-| `matrix` | Falling phosphor green on black — shade-block row separators (`▓█`), glowing underlined column headers, `//` title bookends |
-| `c64` | Commodore 64 — light-blue-on-navy, PETSCII-ish block-quadrant borders, `★` title stars |
-| `amber` | Amber phosphor VT220/VAX terminal |
-| `paper` | Dark text on white background, like a printed spreadsheet |
+| Theme | What it looks like |
+|-------|--------------------|
+| `default` | Normal terminal colors, bold headers, Unicode borders |
+| `visicalc` | Green phosphor, inverted L frame, VisiCalc status chrome |
+| `lotus` | White on blue, Lotus 1-2-3 |
+| `dos` | DOS double-line borders, yellow on blue, very Norton Commander |
+| `matrix` | Falling green phosphor, glowing headers, shaded row separators |
+| `c64` | Light blue on navy, PETSCII block quadrants, little stars |
+| `amber` | Old amber phosphor terminal |
+| `paper` | Dark text on white, like a printed spreadsheet |
 | `rainbow` | Every element a different color. Festive. |
-| `goat` | Cream pasture with a 🐐 that wanders cells, munching. Avoids your cursor. Leaves a trail of 🌻🌼🌱. Status line narrates ("🐐 nibbling on People.Name[Alice]"). |
-| `boring` | No styling at all. Underline cursor. |
+| `goat` | Cream pasture with a 🐐 wandering between cells, eating, leaving 🌻🌼🌱. The status line narrates ("🐐 nibbling on People.Name[Alice]"). It avoids your cursor. |
+| `boring` | No styling at all. Underlined cursor. |
 
-## What doesn't work
+## What it can't do
 
-Formulas (view-only), charts, column operations. Grist is a big application. This renders tables and lets you poke at cells.
+Formulas are view only. No charts. No column operations (add, remove, rename, retype). Grist is a big application; this is a small viewer that lets you poke at cells.
 
-Emoji alignment inside `tmux` / `screen` can still drift because those multiplexers have their own Unicode width tables and don't speak mode 2027. If you see misalignment, try running outside the multiplexer, upgrade to `tmux` 3.6+, or set `variation-selector-always-wide on` in `.tmux.conf`.
+If your terminal lives inside `tmux` or `screen`, emoji alignment can drift, because those programs track their own ideas about character widths. Try running outside the multiplexer, upgrade to `tmux` 3.6 or newer, or add `variation-selector-always-wide on` to your `.tmux.conf`.
 
-## Keyboard shortcuts
+## All the keys, in one place
+
+Most things have an obvious key and a fallback. The fallback is there because terminals vary: some can tell `Ctrl+Enter` from plain Enter, some can't. If a Ctrl combination doesn't seem to do anything, try the function-key version (F5, F7, F8, and so on).
 
 <details>
 <summary>Page picker / Table picker</summary>
 
 | Key | Action |
 |-----|--------|
-| Up/Down | Select page/table |
-| Page Up/Down, Home/End | Scroll by page or jump to top/bottom |
-| Enter | Open |
-| p / Escape | Switch between page picker and table picker |
-| t | Switch to table picker |
-| T | Cycle theme |
-| q | Quit |
+| Up/Down | Select page or table |
+| Page Up/Down, Home/End | Scroll a page or jump to top/bottom |
+| Enter | Open the selected one |
+| Tab, `p`, Escape | Swap between page picker and table picker |
+| `t`, F4 | Switch to table picker |
+| `T`, F12 | Cycle theme |
+| `q`, Ctrl+Q, Ctrl+C | Quit |
 
 </details>
 
@@ -140,22 +181,29 @@ Emoji alignment inside `tmux` / `screen` can still drift because those multiplex
 
 | Key | Action |
 |-----|--------|
-| Arrow keys | Move cursor |
-| Page Up/Down | Scroll by page |
-| Home/End | Jump to first/last row |
-| Tab/Shift-Tab | Focus next/previous pane (visual order, skips collapsed) |
-| 1-9 | Open collapsed widget full-screen (if any) |
-| Enter | Edit cell |
-| v | View full cell content |
-| a | Add row |
-| d | Delete row |
-| u | Undo last action (session only) |
-| U | Redo |
-| r | Refresh |
-| p / Escape | Back to page picker |
-| t | Switch to table picker |
-| T | Cycle theme |
-| q | Quit |
+| Any printable character | Start editing, replacing the cell |
+| Enter, F2 | Start editing, keeping the current value |
+| Backspace | Start editing with an empty cell |
+| Delete | Clear the cell |
+| Arrow keys | Move one cell |
+| Tab, Shift+Tab | Next or previous cell in the row |
+| Page Up/Down | Scroll a page |
+| Home, End | First or last column of the row |
+| Ctrl+Home, Ctrl+End | First or last cell of the table |
+| Ctrl+↑, Ctrl+↓ | First or last record |
+| Ctrl+←, Ctrl+→ | First or last column |
+| F6, Shift+F6 | Next or previous pane |
+| Alt+1 ... Alt+9 | Open a collapsed widget full screen |
+| Ctrl+Enter, F7 | Add a row |
+| Ctrl+Delete, Ctrl+Backspace, F8 | Delete the row |
+| F3 | Open the full-cell viewer |
+| Ctrl+Z | Undo (this session only) |
+| Ctrl+Y, Ctrl+Shift+Z | Redo |
+| Ctrl+R, F5 | Refresh |
+| Escape | Back to the page picker |
+| F4 | Switch to the table picker |
+| F12 | Cycle theme |
+| Ctrl+Q, Ctrl+C | Quit |
 
 </details>
 
@@ -164,49 +212,54 @@ Emoji alignment inside `tmux` / `screen` can still drift because those multiplex
 
 | Key | Action |
 |-----|--------|
-| Up/Down | Move between fields |
-| Left/Right | Previous/next record |
-| Enter | Edit field |
-| Tab/Shift-Tab | Focus next/previous pane |
+| Any printable character | Start editing the focused field, replacing it |
+| Enter, F2 | Edit the field, keeping its value |
+| Up, Down | Previous or next field |
+| Tab, Shift+Tab | Next or previous field (form style) |
+| Home, End | First or last field |
+| Left, Right | Previous or next record |
+| Ctrl+↑, Ctrl+↓ | Previous or next record |
+| Page Up, Page Down | Previous or next record |
+| Ctrl+Home, Ctrl+End | First or last record |
+| F6, Shift+F6 | Next or previous pane |
+| Ctrl+Enter / F7, Ctrl+Delete / F8 | Add or delete row |
+| Ctrl+Z, Ctrl+Y, Ctrl+R, F5, F12 | Undo, redo, refresh, theme |
+| Escape | Back to the page picker |
 
 </details>
 
 <details>
-<summary>Cell viewer (press <code>v</code>)</summary>
+<summary>Cell viewer (F3)</summary>
 
 | Key | Action |
 |-----|--------|
-| Up/Down, Page Up/Down, Home/End | Scroll content |
-| o | Cycle through URLs found in the cell |
-| Enter | Open highlighted URL, or enter edit mode |
-| Escape / v / q | Close viewer |
+| Up/Down, Page Up/Down, Home/End | Scroll the content |
+| Tab, Shift+Tab | Cycle through URLs in the cell |
+| Enter | Open the highlighted URL, or start editing |
+| Escape, F3 | Close the viewer |
 
 </details>
 
 <details>
-<summary>Overlay (collapsed widget, press <code>1</code>-<code>9</code>)</summary>
+<summary>Overlay (a collapsed widget opened full screen)</summary>
 
-| Key | Action |
-|-----|--------|
-| Arrow keys, Page Up/Down | Navigate (full grid controls) |
-| Enter | Edit cell |
-| a / d / v | Add row / delete row / view cell |
-| Escape | Close overlay (returns cursor-linking updates to linked panes) |
+Same keys as the grid view. Escape closes the overlay and the linking
+state catches up with anything you changed.
 
 </details>
 
 <details>
-<summary>Editing</summary>
+<summary>While you're editing a cell</summary>
 
 | Key | Action |
 |-----|--------|
 | Enter | Save |
 | Escape | Cancel |
-| Left/Right/Home/End | Move cursor within text |
+| Left, Right, Home, End | Move within the text |
 
 </details>
 
-## Build from source
+## Building from source
 
 ```bash
 git clone https://github.com/paulfitz/grist-console.git
@@ -218,12 +271,12 @@ yarn cli https://docs.getgrist.com/your-doc-url
 ## Testing
 
 ```bash
-yarn test                # unit tests (no server needed)
-yarn test:integration    # integration tests (starts a Grist Docker container)
+yarn test                # unit tests, no server needed
+yarn test:integration    # spins up a Grist Docker container on port 8585
 yarn test:all            # both
 ```
 
-Set `GRIST_RUNNING=1` to skip Docker container management if you already have a Grist server on port 8585.
+Set `GRIST_RUNNING=1` if you already have a Grist server on port 8585 and want to skip the Docker setup.
 
 ## License
 
