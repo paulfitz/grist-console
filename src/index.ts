@@ -126,13 +126,15 @@ program
     try {
       trace(`orchestrator: starting (initial docId=${docId || "(none)"} siteContext=${siteContext ? `${siteContext.serverUrl}/o/${siteContext.orgSlug}` : "(none)"})`);
       // Loop so the user can press "s" inside an open doc to pop back to
-      // the site picker and pick a different doc.
+      // the site picker and pick a different doc. We carry `theme`
+      // forward across phases so theme cycles (F12) persist when the
+      // user goes doc → picker → doc.
       while (true) {
         if (!docId) {
           trace(`orchestrator: invoking runSitePicker`);
-          let picked;
+          let result;
           try {
-            picked = await runSitePicker({
+            result = await runSitePicker({
               ...siteContext!, apiKey, theme, persistTerminal: true,
             });
           } catch (e: any) {
@@ -140,9 +142,10 @@ program
             trace(`orchestrator: runSitePicker threw: ${e.message}`);
             return;
           }
-          trace(`orchestrator: runSitePicker returned ${picked ? `pick(${picked.id})` : "null"}`);
-          if (!picked) { return; } // user quit without picking
-          docId = picked.id;
+          theme = result.theme;
+          trace(`orchestrator: runSitePicker returned ${result.pick ? `pick(${result.pick.id})` : "null"}`);
+          if (!result.pick) { return; } // user quit without picking
+          docId = result.pick.id;
         }
         trace(`orchestrator: invoking consoleMain (docId=${docId})`);
         const result = await consoleMain({
@@ -150,6 +153,7 @@ program
           verbose: options.verbose, hasSiteContext: !!siteContext,
           persistTerminal: true,
         });
+        theme = result.theme;
         trace(`orchestrator: consoleMain returned kind=${result.kind}`);
         if (result.kind === "quit" || !siteContext) { return; }
         // User asked to switch back to the site picker; clear per-doc

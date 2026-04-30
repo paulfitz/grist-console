@@ -79,6 +79,8 @@ export type InputAction =
   | { type: "cycle_theme" }
   | { type: "close_overlay" }
   | { type: "view_cell" }
+  | { type: "view_help" }
+  | { type: "close_help" }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "paste"; content: string }
@@ -285,6 +287,41 @@ function navigateList(
     case "home":     return { cursor: 0, handled: true };
     case "end":      return { cursor: max - 1, handled: true };
     default:         return { cursor, handled: false };
+  }
+}
+
+function handleHelpKey(key: string, state: AppState): InputAction {
+  // Caller is responsible for clamping helpScroll against renderer's
+  // maxScroll on render; here we just monotonically inc/dec.
+  switch (key) {
+    case "up":
+      if (state.helpScroll > 0) { state.helpScroll--; }
+      return { type: "render" };
+    case "down":
+      state.helpScroll++;
+      return { type: "render" };
+    case "pageup":
+      state.helpScroll = Math.max(0, state.helpScroll - 10);
+      return { type: "render" };
+    case "pagedown":
+      state.helpScroll += 10;
+      return { type: "render" };
+    case "home":
+      state.helpScroll = 0;
+      return { type: "render" };
+    case "end":
+      state.helpScroll = 9999; // clamped on render
+      return { type: "render" };
+    case "f1":
+    case "escape":
+    case "q":
+    case "?":
+      return { type: "close_help" };
+    case "ctrl-q":
+    case "ctrl-c":
+      return { type: "quit" };
+    default:
+      return { type: "none" };
   }
 }
 
@@ -969,7 +1006,14 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
  */
 export function handleKeypress(buf: Buffer, state: AppState): InputAction {
   const key = parseKey(buf);
+  // F1 is global help (and ? as a familiar fallback). Skip while typing
+  // into a cell so the keys are inserted as text.
+  if ((key === "f1" || key === "?") && state.mode !== "editing" && state.mode !== "help") {
+    return { type: "view_help" };
+  }
   switch (state.mode) {
+    case "help":
+      return handleHelpKey(key, state);
     case "site_picker":
       return handleSitePickerKey(key, state);
     case "table_picker":

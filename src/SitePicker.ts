@@ -13,6 +13,7 @@ import { AppState, createInitialState } from "./ConsoleAppState.js";
 import { Theme } from "./ConsoleTheme.js";
 import { handleKeypress } from "./ConsoleInput.js";
 import { render } from "./ConsoleRenderer.js";
+import { runHyperdrive } from "./HyperdriveTransition.js";
 import { trace } from "./Trace.js";
 
 export interface SitePickerOptions {
@@ -27,19 +28,31 @@ export interface SitePickerOptions {
   persistTerminal?: boolean;
 }
 
+export interface SitePickerResult {
+  /** The doc the user picked, or null if they quit without picking. */
+  pick: SiteDoc | null;
+  /** The theme they ended on (may differ from options.theme if they
+   *  cycled with T/F12 inside the picker). */
+  theme: Theme;
+}
+
 /**
- * Run the site picker until the user picks a doc or quits. Returns the
- * chosen SiteDoc, or null if the user quit without picking.
+ * Run the site picker until the user picks a doc or quits.
  *
  * Throws if listSiteDocs fails (no fallback UI for "couldn't fetch") --
  * the caller surfaces the error.
  */
-export async function runSitePicker(options: SitePickerOptions): Promise<SiteDoc | null> {
+export async function runSitePicker(options: SitePickerOptions): Promise<SitePickerResult> {
   trace(`SitePicker: enter (server=${options.serverUrl} org=${options.orgSlug} persistTerminal=${!!options.persistTerminal})`);
-  process.stdout.write("Loading site...\n");
+  let loading = true;
+  const docsPromise = listSiteDocs(options.serverUrl, options.orgSlug, options.apiKey)
+    .finally(() => { loading = false; });
+  // Spin a galaxy-spiral transition in the active theme's colours for as
+  // long as the network call takes. No-op on non-TTY (tests).
+  await runHyperdrive(options.theme, () => loading);
   let docs: SiteDoc[];
   try {
-    docs = await listSiteDocs(options.serverUrl, options.orgSlug, options.apiKey);
+    docs = await docsPromise;
     trace(`SitePicker: listSiteDocs returned ${docs.length} docs`);
   } catch (e: any) {
     trace(`SitePicker: listSiteDocs threw: ${e.message}`);
@@ -59,7 +72,7 @@ export async function runSitePicker(options: SitePickerOptions): Promise<SiteDoc
   const doRender = () => process.stdout.write(render(state));
   doRender();
 
-  return new Promise<SiteDoc | null>((resolve) => {
+  return new Promise<SitePickerResult>((resolve) => {
     if (process.stdin.isTTY && manageTerminal) { process.stdin.setRawMode(true); }
     process.stdin.resume();
     // Ensure stdin keeps the event loop alive while we wait for keys.
@@ -72,8 +85,8 @@ export async function runSitePicker(options: SitePickerOptions): Promise<SiteDoc
     const onResize = () => doRender();
     process.stdout.on("resize", onResize);
 
-    const cleanup = (result: SiteDoc | null) => {
-      trace(`SitePicker: cleanup result=${result ? `pick(${result.id})` : "null"}`);
+    const cleanup = (pick: SiteDoc | null) => {
+      trace(`SitePicker: cleanup result=${pick ? `pick(${pick.id})` : "null"}`);
       process.stdin.removeListener("data", dataHandler);
       process.stdout.removeListener("resize", onResize);
       if (manageTerminal) {
@@ -81,7 +94,7 @@ export async function runSitePicker(options: SitePickerOptions): Promise<SiteDoc
         process.stdin.pause();
         if (isTty) { process.stdout.write(SHOW_CURSOR + EXIT_ALT_SCREEN); }
       }
-      resolve(result);
+      resolve({ pick, theme: state.theme });
     };
 
     const dataHandler = (data: Buffer) => {
@@ -94,6 +107,16 @@ export async function runSitePicker(options: SitePickerOptions): Promise<SiteDoc
           cleanup(state.siteDocs[state.siteCursor] ?? null);
           return;
         case "render":
+          doRender();
+          return;
+        case "view_help":
+          state.helpReturnMode = state.mode;
+          state.helpScroll = 0;
+          state.mode = "help";
+          doRender();
+          return;
+        case "close_help":
+          state.mode = state.helpReturnMode;
           doRender();
           return;
         case "cycle_theme": {

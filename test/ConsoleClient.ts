@@ -2451,6 +2451,78 @@ describe("ConsoleClient", function() {
     });
   });
 
+  describe("help screen", function() {
+    it("F1 opens help and remembers where to return", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      const action = handleKeypress(Buffer.from("\x1bOP"), state); // F1
+      assert.equal(action.type, "view_help");
+    });
+
+    it("? opens help (familiar fallback)", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
+      const action = handleKeypress(Buffer.from("?"), state);
+      assert.equal(action.type, "view_help");
+    });
+
+    it("F1 in editing mode is treated as text, not help", function() {
+      const state = createInitialState("docId");
+      state.mode = "editing";
+      state.editValue = "";
+      state.editCursorPos = 0;
+      const action = handleKeypress(Buffer.from("\x1bOP"), state);
+      assert.notEqual(action.type, "view_help");
+    });
+
+    it("help mode renders the keyboard reference", function() {
+      const origRows = process.stdout.rows;
+      Object.defineProperty(process.stdout, "rows", { value: 80, configurable: true });
+      try {
+        const state = createInitialState("docId");
+        state.mode = "help";
+        const out = stripAnsi(render(state));
+        assert.include(out, "grist-console");
+        assert.include(out, "PICKERS");
+        assert.include(out, "GRID");
+        assert.include(out, "CARD");
+        assert.include(out, "CELL VIEWER");
+      } finally {
+        Object.defineProperty(process.stdout, "rows", { value: origRows, configurable: true });
+      }
+    });
+
+    it("Esc closes help", function() {
+      const state = createInitialState("docId");
+      state.mode = "help";
+      state.helpReturnMode = "page_picker";
+      const action = handleKeypress(Buffer.from("\x1b"), state);
+      assert.equal(action.type, "close_help");
+    });
+
+    it("F1 toggles help shut", function() {
+      const state = createInitialState("docId");
+      state.mode = "help";
+      state.helpReturnMode = "grid";
+      const action = handleKeypress(Buffer.from("\x1bOP"), state);
+      assert.equal(action.type, "close_help");
+    });
+
+    it("↑↓ scrolls inside help", function() {
+      const state = createInitialState("docId");
+      state.mode = "help";
+      state.helpScroll = 0;
+      handleKeypress(Buffer.from("\x1b[B"), state); // down
+      assert.equal(state.helpScroll, 1);
+      handleKeypress(Buffer.from("\x1b[A"), state); // up
+      assert.equal(state.helpScroll, 0);
+      handleKeypress(Buffer.from("\x1b[A"), state); // up clamped
+      assert.equal(state.helpScroll, 0);
+    });
+  });
+
   // ===================== Robustness gap tests =====================
 
   describe("applyDocActionToPane (edge cases via applyDocActions)", function() {

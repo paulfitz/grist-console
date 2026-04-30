@@ -41,9 +41,13 @@ const commandFns: Record<string, (s: AppState, c: ConsoleConnection) => Promise<
 /**
  * Outcome of running the console client for one doc. "switch_to_site"
  * means the user wants to pop back to the site picker; the orchestrator
- * in index.ts loops on that and reopens the picker.
+ * in index.ts loops on that and reopens the picker. `theme` is the
+ * theme the user ended on (may differ from the one passed in if they
+ * cycled with F12), so the orchestrator can carry it to the next phase.
  */
-export type ConsoleMainResult = { kind: "quit" } | { kind: "switch_to_site" };
+export type ConsoleMainResult =
+  | { kind: "quit"; theme: Theme }
+  | { kind: "switch_to_site"; theme: Theme };
 
 /**
  * Main entry point for the console client.
@@ -201,7 +205,7 @@ export async function consoleMain(options: {
 
     process.stdin.on("end", () => {
       cleanupGoat();
-      doCleanup(state, conn, resolve, { kind: "quit" }, manageTerminal);
+      doCleanup(state, conn, resolve, { kind: "quit", theme: state.theme }, manageTerminal);
     });
 
     // Bracketed-paste accumulator. While a paste is in progress, further
@@ -295,7 +299,7 @@ export async function consoleMain(options: {
       switch (action.type) {
         case "quit":
           cleanupGoat();
-          doCleanup(state, conn, resolve, { kind: "quit" }, manageTerminal);
+          doCleanup(state, conn, resolve, { kind: "quit", theme: state.theme }, manageTerminal);
           return;
         case "render": {
           // Clear transient status on any navigation/render
@@ -362,7 +366,7 @@ export async function consoleMain(options: {
         case "switch_to_site":
           trace(`consoleMain: switch_to_site action received`);
           cleanupGoat();
-          doCleanup(state, conn, resolve, { kind: "switch_to_site" }, manageTerminal);
+          doCleanup(state, conn, resolve, { kind: "switch_to_site", theme: state.theme }, manageTerminal);
           return;
         case "switch_to_tables":
         case "switch_to_pages":
@@ -374,6 +378,16 @@ export async function consoleMain(options: {
         case "focus_next_pane":
         case "focus_prev_pane":
           cyclePane(state, action.type === "focus_next_pane" ? 1 : -1);
+          doRender(state);
+          break;
+        case "view_help":
+          state.helpReturnMode = state.mode;
+          state.helpScroll = 0;
+          state.mode = "help";
+          doRender(state);
+          break;
+        case "close_help":
+          state.mode = state.helpReturnMode;
           doRender(state);
           break;
         case "view_cell": {
@@ -641,7 +655,7 @@ function doRender(state: AppState): void {
 function doCleanup(
   state: AppState, conn: ConsoleConnection,
   resolve: (r: ConsoleMainResult) => void,
-  result: ConsoleMainResult = { kind: "quit" },
+  result: ConsoleMainResult = { kind: "quit", theme: state.theme },
   manageTerminal = true,
 ): void {
   // Tear down terminal mode only when:

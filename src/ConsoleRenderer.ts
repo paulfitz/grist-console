@@ -72,6 +72,9 @@ export function render(state: AppState): string {
   if (state.mode === "cell_viewer" || (state.mode === "editing" && state.cellViewerContent)) {
     return renderCellViewer(state, termRows, termCols);
   }
+  if (state.mode === "help") {
+    return renderHelp(state, termRows, termCols);
+  }
   if (state.mode === "site_picker") {
     return renderSitePicker(state, termRows, termCols);
   }
@@ -144,7 +147,7 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
     const urls = extractUrls(state.cellViewerContent);
     const urlHint = urls.length > 0 ? "  Tab:link" : "";
     const enterHint = state.cellViewerLinkIndex >= 0 ? "Enter:open" : "Enter:edit";
-    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc:close${scrollInfo}`));
+    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc:close  ^C:quit${scrollInfo}`));
     if (state.cellViewerLinkIndex >= 0 && state.cellViewerLinkIndex < urls.length) {
       lines.push(`link ${state.cellViewerLinkIndex + 1}/${urls.length}: ${urls[state.cellViewerLinkIndex]}`);
     } else {
@@ -180,6 +183,95 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
   return result;
 }
 
+/**
+ * Static keyboard reference -- mirrors README.md but kept in code so the
+ * help screen is guaranteed to ship with the binary.
+ */
+const HELP_LINES: string[] = [
+  "",
+  "  PICKERS  (site / pages / tables)",
+  "    ↑ ↓                Move",
+  "    Enter              Open",
+  "    Tab                Swap pages ↔ tables",
+  "    s                  Site list (when launched against a site)",
+  "    T  /  F12          Cycle theme",
+  "    ^C  /  ^Q          Quit",
+  "",
+  "  GRID  (one or more table panes on a page)",
+  "    Arrows / Tab       Move one cell",
+  "    Page Up / Down     Scroll a page",
+  "    Home / End         First / last column of the row",
+  "    ^Home / ^End       First / last cell of the table",
+  "    ^↑ / ^↓            First / last record",
+  "    ^← / ^→            First / last column",
+  "    <type>             Edit cell, replacing its value",
+  "    Enter / F2         Edit cell, keeping its value",
+  "    Backspace          Edit with the cell empty",
+  "    Delete             Clear the cell",
+  "    ^Enter / F7        Add a row",
+  "    ^Delete / F8       Delete the row",
+  "    F3                 Open the full-cell viewer",
+  "    F6 / Shift-F6      Next / previous pane",
+  "    Alt+1 ... Alt+9    Open a collapsed widget full-screen",
+  "    ^Z                 Undo (this session)",
+  "    ^Y / ^Shift+Z      Redo",
+  "    ^R / F5            Refresh",
+  "    F4                 Tables picker",
+  "    Esc                Pages picker",
+  "    F12                Cycle theme",
+  "    ^Q / ^C            Quit",
+  "",
+  "  CARD  (one record per page, fields stacked)",
+  "    ↑ ↓                Previous / next field",
+  "    ← → / ^↑↓ / PgUp/Dn   Flip records",
+  "    Type / Enter       Edit, same as grid",
+  "",
+  "  CELL VIEWER  (F3)",
+  "    ↑↓ / PgUp/Dn / Home/End   Scroll content",
+  "    Tab / Shift-Tab           Cycle URLs in the cell",
+  "    Enter                     Open URL or start editing",
+  "    Esc / F3                  Close",
+  "",
+  "  EDITING A CELL",
+  "    Enter              Save",
+  "    Esc                Cancel",
+  "    ← → / Home / End   Move within the text",
+  "",
+  "  BOOLEAN CELLS",
+  "    Enter, Space, or any printable key flips the value.",
+  "    Backspace / Delete clears it to false.",
+  "",
+  "  HELP",
+  "    F1 or ?            Open this help",
+  "    ↑↓ / PgUp/Dn       Scroll",
+  "    Esc / F1 / ?       Close",
+  "",
+];
+
+function renderHelp(state: AppState, termRows: number, termCols: number): string {
+  const t = state.theme;
+  const lines: string[] = [];
+
+  const title = t.pickerTitleFormat("grist-console — keys");
+  lines.push(t.titleBar(padRight(title, termCols)));
+
+  const dataRows = Math.max(1, termRows - 3); // title + help bar + status
+  const maxScroll = Math.max(0, HELP_LINES.length - dataRows);
+  if (state.helpScroll > maxScroll) { state.helpScroll = maxScroll; }
+  for (let r = 0; r < dataRows; r++) {
+    const idx = state.helpScroll + r;
+    lines.push(idx < HELP_LINES.length ? padRight(HELP_LINES[idx], termCols) : "");
+  }
+
+  const scrollHint = HELP_LINES.length > dataRows
+    ? `  (${state.helpScroll + 1}-${Math.min(state.helpScroll + dataRows, HELP_LINES.length)}/${HELP_LINES.length})`
+    : "";
+  lines.push(t.helpBar(`↑↓:scroll  Esc/F1:close  ^C:quit${scrollHint}`));
+  lines.push(getStatusLine(state, termCols));
+
+  return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
+}
+
 function renderTablePicker(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
   const lines: string[] = [];
@@ -210,7 +302,7 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
   // Key help
   const pagesHint = state.pages.length > 0 ? "  Tab:pages" : "";
   const siteHint = state.hasSiteContext ? "  s:site" : "";
-  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}${siteHint}  T:theme  q:quit`));
+  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}${siteHint}  T:theme  F1:help  ^C:quit`));
 
   // Status
   lines.push(getStatusLine(state, termCols));
@@ -312,7 +404,7 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
     lines.push(t.helpBar(`Delete row ${pane.rowIds[pane.cursorRow]}? y:confirm  n/Esc:cancel`));
   } else {
     const pagesHint = state.pages.length > 0 ? "  Esc:pages" : "";
-    lines.push(t.helpBar(`type:edit  Enter:edit  F3:view  ^Enter:add  ^Del:del  ^Z:undo  F4:tables${pagesHint}  ^C:quit`));
+    lines.push(t.helpBar(`type:edit  Enter:edit  F3:view  ^Enter:add  ^Del:del  ^Z:undo  F4:tables${pagesHint}  F1:help  ^C:quit`));
   }
 
   // Status
@@ -386,7 +478,7 @@ function renderSitePicker(state: AppState, termRows: number, termCols: number): 
   }
   while (lines.length < termRows - 2) { lines.push(""); }
 
-  lines.push(t.helpBar("↑↓:select  Enter:open  T:theme  q:quit"));
+  lines.push(t.helpBar("↑↓:select  Enter:open  T:theme  F1:help  ^C:quit"));
   lines.push(getStatusLine(state, termCols));
 
   return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
@@ -416,7 +508,7 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
   }
 
   const siteHint = state.hasSiteContext ? "  s:site" : "";
-  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open  Tab:tables${siteHint}  T:theme  q:quit`));
+  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open  Tab:tables${siteHint}  T:theme  F1:help  ^C:quit`));
   lines.push(getStatusLine(state, termCols));
 
   // Clear to end of line after each line to overwrite any stale content
