@@ -1,6 +1,6 @@
 {
   "name": "grist-console",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Terminal UI for viewing and editing Grist documents",
   "type": "module",
   "main": "dist/src/index.js",
