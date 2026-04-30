@@ -1,0 +1,36 @@
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # for npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - run: yarn test
+      # On tag pushes, refuse to publish if the tag doesn't match
+      # package.json -- catches "forgot to bump" / "bumped wrong digit".
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json ${PKG}" >&2
+            exit 1
+          fi
+      # npm 11.5+ is required for OIDC trusted publishing.
+      - run: npm install -g 'npm@>=11.5.0'
+      - run: npm publish --provenance --access public
