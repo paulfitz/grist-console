@@ -9,6 +9,7 @@ import { runSitePicker } from "./SitePicker.js";
 import {
   ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR,
   ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE,
+  ENABLE_EXTENDED_KEYS, DISABLE_EXTENDED_KEYS,
 } from "./ConsoleDisplay.js";
 import { drainTrace, enableTrace, getTracePath, trace } from "./Trace.js";
 
@@ -110,7 +111,10 @@ program
     // -- those toggles can provoke the TTY into emitting response bytes
     // that get re-injected as keypresses on the next handler.
     const isTty = !!process.stdout.isTTY;
-    if (isTty) { process.stdout.write(ENTER_ALT_SCREEN + ENABLE_BRACKETED_PASTE + HIDE_CURSOR); }
+    if (isTty) {
+      process.stdout.write(ENTER_ALT_SCREEN + ENABLE_BRACKETED_PASTE
+                           + ENABLE_EXTENDED_KEYS + HIDE_CURSOR);
+    }
     if (process.stdin.isTTY) { process.stdin.setRawMode(true); }
     let exited = false;
     const restoreTerminal = () => {
@@ -118,7 +122,10 @@ program
       exited = true;
       if (process.stdin.isTTY) { process.stdin.setRawMode(false); }
       process.stdin.pause();
-      if (isTty) { process.stdout.write(SHOW_CURSOR + DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN); }
+      if (isTty) {
+        process.stdout.write(SHOW_CURSOR + DISABLE_EXTENDED_KEYS
+                             + DISABLE_BRACKETED_PASTE + EXIT_ALT_SCREEN);
+      }
     };
     process.on("exit", restoreTerminal);
 

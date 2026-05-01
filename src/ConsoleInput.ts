@@ -1,4 +1,5 @@
 import { AppState, isCardPane, PaneState, activeView, editReturnMode } from "./ConsoleAppState.js";
+import { clampPaletteCursor, filterCommands } from "./CommandPalette.js";
 import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
 import { collectLeaves, computeColLayout, LayoutNode } from "./ConsoleLayout.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
@@ -79,8 +80,8 @@ export type InputAction =
   | { type: "cycle_theme" }
   | { type: "close_overlay" }
   | { type: "view_cell" }
-  | { type: "view_help" }
-  | { type: "close_help" }
+  | { type: "view_command_palette" }
+  | { type: "close_command_palette" }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "paste"; content: string }
@@ -139,6 +140,29 @@ function tildeCodeToKey(code: number): string {
 }
 
 /**
+ * Map a kitty / modifyOtherKeys keycode to a base key name. Returns "" if
+ * the code isn't a key we know how to name. Printable single-byte codes
+ * (0x20-0x7e) map to their character so callers can synthesize things
+ * like "ctrl-a".
+ */
+function csiuCodeToKey(code: number): string {
+  switch (code) {
+    case 13:  return "enter";
+    case 9:   return "tab";
+    case 27:  return "escape";
+    case 8:
+    case 127: return "backspace";
+    case 32:  return " ";
+  }
+  if (code >= 0x21 && code <= 0x7e) {
+    // Letters: kitty sends the lowercase codepoint when Shift isn't held;
+    // normalize to lowercase so "ctrl-a" doesn't collide with "ctrl-A".
+    return String.fromCharCode(code).toLowerCase();
+  }
+  return "";
+}
+
+/**
  * Parse a raw keypress buffer into a key name. Returns one of:
  *  - a single printable codepoint (e.g. "a", "5", " "),
  *  - a multi-byte UTF-8 sequence as its decoded string,
@@ -183,6 +207,8 @@ function parseKey(buf: Buffer): string {
 
       // Tilde-form keys (with optional modifier): ESC [ N ~  or  ESC [ N ; M ~
       // Covers PgUp/PgDn/Delete/Insert/Home/End and F5-F12.
+      // Also handles xterm modifyOtherKeys=2: ESC [ 27 ; M ; CODE ~  (M is
+      // the xterm modifier digit, CODE is the keycode -- e.g. 13=Enter).
       if (buf[2] >= 0x30 && buf[2] <= 0x39) {
         let i = 2;
         while (i < buf.length && buf[i] !== 0x7e) { i++; }
@@ -190,7 +216,33 @@ function parseKey(buf: Buffer): string {
           const inner = buf.slice(2, i).toString("ascii");
           const parts = inner.split(";");
           const code = parseInt(parts[0], 10);
+          if (code === 27 && parts.length >= 3) {
+            const mod = parseInt(parts[1], 10);
+            const otherCode = parseInt(parts[2], 10);
+            const otherKey = csiuCodeToKey(otherCode);
+            if (otherKey) { return modifierPrefix(mod) + otherKey; }
+          }
           const key = tildeCodeToKey(code);
+          if (key) {
+            const mod = parts[1] ? parseInt(parts[1], 10) : 1;
+            return modifierPrefix(mod) + key;
+          }
+        }
+      }
+
+      // CSI-u form (kitty keyboard protocol): ESC [ N u  or  ESC [ N ; M u.
+      // N is a keycode (13=Enter, 127=Backspace, 9=Tab, 32=Space, or a
+      // printable codepoint); M is the xterm modifier digit. We rely on
+      // this for keys like Ctrl+Enter that the legacy stream can't
+      // distinguish from their unmodified forms.
+      if (buf[2] >= 0x30 && buf[2] <= 0x39) {
+        let i = 2;
+        while (i < buf.length && buf[i] !== 0x75 && buf[i] !== 0x7e) { i++; }
+        if (i < buf.length && buf[i] === 0x75 && i > 2) {
+          const inner = buf.slice(2, i).toString("ascii");
+          const parts = inner.split(";");
+          const code = parseInt(parts[0], 10);
+          const key = csiuCodeToKey(code);
           if (key) {
             const mod = parts[1] ? parseInt(parts[1], 10) : 1;
             return modifierPrefix(mod) + key;
@@ -290,39 +342,83 @@ function navigateList(
   }
 }
 
-function handleHelpKey(key: string, state: AppState): InputAction {
-  // Caller is responsible for clamping helpScroll against renderer's
-  // maxScroll on render; here we just monotonically inc/dec.
+function handlePaletteKey(key: string, state: AppState): InputAction {
+  // Filter the list once so we share work with the renderer; cursor
+  // operations clamp against the same view.
+  const filtered = filterCommands(state.paletteQuery, state.paletteReturnMode);
   switch (key) {
+    case "escape":
+    case "f1":
+      return { type: "close_command_palette" };
+    case "ctrl-c":
+    case "ctrl-q":
+      return { type: "quit" };
     case "up":
-      if (state.helpScroll > 0) { state.helpScroll--; }
+      state.paletteCursor--;
+      clampPaletteCursor(state, filtered);
       return { type: "render" };
     case "down":
-      state.helpScroll++;
+      state.paletteCursor++;
+      clampPaletteCursor(state, filtered);
       return { type: "render" };
     case "pageup":
-      state.helpScroll = Math.max(0, state.helpScroll - 10);
+      state.paletteCursor = Math.max(0, state.paletteCursor - 10);
+      clampPaletteCursor(state, filtered);
       return { type: "render" };
     case "pagedown":
-      state.helpScroll += 10;
+      state.paletteCursor += 10;
+      clampPaletteCursor(state, filtered);
       return { type: "render" };
     case "home":
-      state.helpScroll = 0;
+      state.paletteCursor = 0;
       return { type: "render" };
     case "end":
-      state.helpScroll = 9999; // clamped on render
+      state.paletteCursor = filtered.length > 0 ? filtered.length - 1 : 0;
       return { type: "render" };
-    case "f1":
-    case "escape":
-    case "q":
-    case "?":
-      return { type: "close_help" };
-    case "ctrl-q":
-    case "ctrl-c":
-      return { type: "quit" };
-    default:
-      return { type: "none" };
+    case "tab": {
+      // Complete the typed query into the highlighted command's name --
+      // the vim ":" workflow. If nothing is highlighted, no-op.
+      const cmd = filtered[state.paletteCursor];
+      if (cmd) {
+        state.paletteQuery = cmd.name;
+        // Re-filter so the highlighted command stays in view (it always
+        // matches its own name); cursor clamps against the new list.
+        const refiltered = filterCommands(state.paletteQuery, state.paletteReturnMode);
+        state.paletteCursor = refiltered.findIndex(c => c.name === cmd.name);
+        if (state.paletteCursor < 0) { state.paletteCursor = 0; }
+      }
+      return { type: "render" };
+    }
+    case "enter": {
+      const cmd = filtered[state.paletteCursor];
+      if (!cmd || cmd.action.type === "none") {
+        // Pure-info row, or nothing matched -- close the palette so the
+        // user isn't stranded staring at an empty list.
+        return { type: "close_command_palette" };
+      }
+      // Restore the underlying mode before dispatching, so actions like
+      // add_row run in the right context. The main loop will get the
+      // returned action with state.mode already correct.
+      state.mode = state.paletteReturnMode;
+      state.paletteQuery = "";
+      state.paletteCursor = 0;
+      return cmd.action;
+    }
+    case "backspace":
+      if (state.paletteQuery.length > 0) {
+        state.paletteQuery = state.paletteQuery.slice(0, -1);
+        clampPaletteCursor(state,
+          filterCommands(state.paletteQuery, state.paletteReturnMode));
+      }
+      return { type: "render" };
   }
+  // Printable characters extend the query.
+  if (isPrintableKey(key)) {
+    state.paletteQuery += key;
+    state.paletteCursor = 0;
+    return { type: "render" };
+  }
+  return { type: "none" };
 }
 
 function handleSitePickerKey(key: string, state: AppState): InputAction {
@@ -1006,14 +1102,21 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
  */
 export function handleKeypress(buf: Buffer, state: AppState): InputAction {
   const key = parseKey(buf);
-  // F1 is global help (and ? as a familiar fallback). Skip while typing
-  // into a cell so the keys are inserted as text.
-  if ((key === "f1" || key === "?") && state.mode !== "editing" && state.mode !== "help") {
-    return { type: "view_help" };
+  // Global trigger for the command palette (which doubles as help).
+  // F1, ?, Ctrl+P, and `:` all work outside editing -- in grid/card the
+  // `:` shortcut wins over "printable starts an edit", since the cost
+  // (one less character that opens an edit) is small and the gain
+  // (palette as a fallback for hard-to-distinguish bindings) is large.
+  // To insert a literal colon, press Enter / F2 first to enter the
+  // editor, then type.
+  if (state.mode !== "editing" && state.mode !== "command_palette") {
+    if (key === "f1" || key === "?" || key === "ctrl-p" || key === ":") {
+      return { type: "view_command_palette" };
+    }
   }
   switch (state.mode) {
-    case "help":
-      return handleHelpKey(key, state);
+    case "command_palette":
+      return handlePaletteKey(key, state);
     case "site_picker":
       return handleSitePickerKey(key, state);
     case "table_picker":

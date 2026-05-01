@@ -1782,6 +1782,54 @@ describe("ConsoleClient", function() {
     });
   });
 
+  describe("Ctrl+Enter add_row over CSI-u and modifyOtherKeys", function() {
+    function makeGridState() {
+      const state = createInitialState("testDoc");
+      state.mode = "grid";
+      state.currentTableId = "T";
+      state.panes = [makePane({
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1],
+        colValues: { Name: ["Alice"] },
+      })];
+      state.focusedPane = 0;
+      return state;
+    }
+
+    it("F7 always triggers add_row (universal fallback)", function() {
+      const state = makeGridState();
+      // F7: ESC [ 1 8 ~
+      const action = handleKeypress(Buffer.from([0x1b, 0x5b, 0x31, 0x38, 0x7e]), state);
+      assert.equal(action.type, "add_row");
+    });
+
+    it("Ctrl+Enter via kitty CSI-u (ESC [ 13 ; 5 u) triggers add_row", function() {
+      const state = makeGridState();
+      const action = handleKeypress(Buffer.from("\x1b[13;5u"), state);
+      assert.equal(action.type, "add_row");
+    });
+
+    it("Ctrl+Enter via xterm modifyOtherKeys (ESC [ 27 ; 5 ; 13 ~) triggers add_row", function() {
+      const state = makeGridState();
+      const action = handleKeypress(Buffer.from("\x1b[27;5;13~"), state);
+      assert.equal(action.type, "add_row");
+    });
+
+    it("plain Enter on a non-Bool cell still opens the editor (not add_row)", function() {
+      const state = makeGridState();
+      const action = handleKeypress(Buffer.from([0x0d]), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.mode, "editing");
+    });
+
+    it("Ctrl+Backspace via CSI-u opens the delete prompt", function() {
+      const state = makeGridState();
+      // 127;5u = Ctrl+Backspace
+      handleKeypress(Buffer.from("\x1b[127;5u"), state);
+      assert.equal(state.mode, "confirm_delete");
+    });
+  });
+
   describe("appendRowToColValues (AddRecord row insertion)", function() {
     it("appends to all columns including hidden ones", function() {
       const target = { Name: ["Alice"], Age: [30], manualSort: [10.5] };
@@ -2451,75 +2499,153 @@ describe("ConsoleClient", function() {
     });
   });
 
-  describe("help screen", function() {
-    it("F1 opens help and remembers where to return", function() {
+  describe("command palette (also serves as help)", function() {
+    it("F1 opens the palette and remembers where to return", function() {
       const state = createInitialState("docId");
       state.mode = "page_picker";
       state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
       const action = handleKeypress(Buffer.from("\x1bOP"), state); // F1
-      assert.equal(action.type, "view_help");
+      assert.equal(action.type, "view_command_palette");
     });
 
-    it("? opens help (familiar fallback)", function() {
+    it("? opens the palette (familiar fallback)", function() {
       const state = createInitialState("docId");
       state.mode = "page_picker";
       state.pages = [{ pageId: 1, viewId: 1, name: "Page 1", indentation: 0 }];
       const action = handleKeypress(Buffer.from("?"), state);
-      assert.equal(action.type, "view_help");
+      assert.equal(action.type, "view_command_palette");
     });
 
-    it("F1 in editing mode is treated as text, not help", function() {
+    it("Ctrl+P opens the palette", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      const action = handleKeypress(Buffer.from([0x10]), state); // ^P
+      assert.equal(action.type, "view_command_palette");
+    });
+
+    it(": opens the palette in pickers (no cell to type into)", function() {
+      const state = createInitialState("docId");
+      state.mode = "page_picker";
+      const action = handleKeypress(Buffer.from(":"), state);
+      assert.equal(action.type, "view_command_palette");
+    });
+
+    it(": opens the palette from grid mode (does not start a cell edit)", function() {
+      const state = createInitialState("docId");
+      state.mode = "grid";
+      state.currentTableId = "T";
+      state.panes = [makePane({
+        columns: [{ colId: "Name", type: "Text", label: "Name" }],
+        rowIds: [1],
+        colValues: { Name: ["Alice"] },
+      })];
+      state.focusedPane = 0;
+      const action = handleKeypress(Buffer.from(":"), state);
+      assert.equal(action.type, "view_command_palette");
+      assert.notEqual(state.mode, "editing");
+    });
+
+    it("F1 in editing mode is treated as text, not the palette", function() {
       const state = createInitialState("docId");
       state.mode = "editing";
       state.editValue = "";
       state.editCursorPos = 0;
       const action = handleKeypress(Buffer.from("\x1bOP"), state);
-      assert.notEqual(action.type, "view_help");
+      assert.notEqual(action.type, "view_command_palette");
     });
 
-    it("help mode renders the keyboard reference", function() {
+    it("renders the unfiltered command list as the keymap reference", function() {
       const origRows = process.stdout.rows;
       Object.defineProperty(process.stdout, "rows", { value: 80, configurable: true });
       try {
         const state = createInitialState("docId");
-        state.mode = "help";
+        state.mode = "command_palette";
+        state.paletteReturnMode = "grid";
         const out = stripAnsi(render(state));
-        assert.include(out, "grist-console");
-        assert.include(out, "PICKERS");
-        assert.include(out, "GRID");
-        assert.include(out, "CARD");
-        assert.include(out, "CELL VIEWER");
+        assert.include(out, "Commands");
+        assert.include(out, "add-row");
+        assert.include(out, "F7");
       } finally {
         Object.defineProperty(process.stdout, "rows", { value: origRows, configurable: true });
       }
     });
 
-    it("Esc closes help", function() {
+    it("Esc closes the palette", function() {
       const state = createInitialState("docId");
-      state.mode = "help";
-      state.helpReturnMode = "page_picker";
+      state.mode = "command_palette";
+      state.paletteReturnMode = "page_picker";
       const action = handleKeypress(Buffer.from("\x1b"), state);
-      assert.equal(action.type, "close_help");
+      assert.equal(action.type, "close_command_palette");
     });
 
-    it("F1 toggles help shut", function() {
+    it("typing filters the list", function() {
       const state = createInitialState("docId");
-      state.mode = "help";
-      state.helpReturnMode = "grid";
-      const action = handleKeypress(Buffer.from("\x1bOP"), state);
-      assert.equal(action.type, "close_help");
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      handleKeypress(Buffer.from("a"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from("d"), state);
+      assert.equal(state.paletteQuery, "add");
+      assert.equal(state.paletteCursor, 0);
     });
 
-    it("↑↓ scrolls inside help", function() {
+    it("Tab completes the typed query to the highlighted command", function() {
       const state = createInitialState("docId");
-      state.mode = "help";
-      state.helpScroll = 0;
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      handleKeypress(Buffer.from("a"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from("\t"), state); // tab
+      assert.equal(state.paletteQuery, "add-row");
+    });
+
+    it("Enter on a runnable command dispatches its action", function() {
+      const state = createInitialState("docId");
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      handleKeypress(Buffer.from("a"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from("d"), state);
+      const action = handleKeypress(Buffer.from([0x0d]), state); // Enter
+      assert.equal(action.type, "add_row");
+      assert.equal(state.mode, "grid");
+    });
+
+    it("Enter on a no-op help row closes the palette without acting", function() {
+      const state = createInitialState("docId");
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      // "edges" uniquely matches the row-edges / table-edges info rows --
+      // both have action.type === "none".
+      handleKeypress(Buffer.from("e"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from("g"), state);
+      handleKeypress(Buffer.from("e"), state);
+      handleKeypress(Buffer.from("s"), state);
+      const action = handleKeypress(Buffer.from([0x0d]), state); // Enter
+      assert.equal(action.type, "close_command_palette");
+    });
+
+    it("Backspace shortens the query", function() {
+      const state = createInitialState("docId");
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      handleKeypress(Buffer.from("a"), state);
+      handleKeypress(Buffer.from("d"), state);
+      handleKeypress(Buffer.from([0x7f]), state); // backspace
+      assert.equal(state.paletteQuery, "a");
+    });
+
+    it("↑↓ moves the cursor", function() {
+      const state = createInitialState("docId");
+      state.mode = "command_palette";
+      state.paletteReturnMode = "grid";
+      state.paletteCursor = 0;
       handleKeypress(Buffer.from("\x1b[B"), state); // down
-      assert.equal(state.helpScroll, 1);
+      assert.equal(state.paletteCursor, 1);
       handleKeypress(Buffer.from("\x1b[A"), state); // up
-      assert.equal(state.helpScroll, 0);
-      handleKeypress(Buffer.from("\x1b[A"), state); // up clamped
-      assert.equal(state.helpScroll, 0);
+      assert.equal(state.paletteCursor, 0);
     });
   });
 

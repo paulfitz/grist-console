@@ -109,14 +109,17 @@ export async function runSitePicker(options: SitePickerOptions): Promise<SitePic
         case "render":
           doRender();
           return;
-        case "view_help":
-          state.helpReturnMode = state.mode;
-          state.helpScroll = 0;
-          state.mode = "help";
+        case "view_command_palette":
+          state.paletteReturnMode = state.mode;
+          state.paletteQuery = "";
+          state.paletteCursor = 0;
+          state.mode = "command_palette";
           doRender();
           return;
-        case "close_help":
-          state.mode = state.helpReturnMode;
+        case "close_command_palette":
+          state.mode = state.paletteReturnMode;
+          state.paletteQuery = "";
+          state.paletteCursor = 0;
           doRender();
           return;
         case "cycle_theme": {

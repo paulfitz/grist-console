@@ -36,6 +36,19 @@ export const DISABLE_BRACKETED_PASTE = `${ESC}?2004l`;
 export const PASTE_BEGIN = `${ESC}200~`;
 export const PASTE_END = `${ESC}201~`;
 export const ANSI_RESET = "\x1b[0m";
+// Ask the terminal to disambiguate keys like Ctrl+Enter, Ctrl+Backspace,
+// Ctrl+Shift+letter from their unmodified forms. We push both flavors and
+// parse whichever the terminal happens to send back -- terminals that don't
+// understand the request just ignore it.
+//   - kitty keyboard protocol (CSI ? u): push flag 1 (disambiguate),
+//     pop on exit. Supported by kitty, foot, wezterm, ghostty, recent
+//     alacritty, recent neovim/tmux passthrough.
+//   - xterm modifyOtherKeys=2: emits CSI 27;<mod>;<code>~ for modified
+//     keys. Supported by xterm, gnome-terminal, vte-based terminals,
+//     VS Code's terminal.
+// Together these cover most modern terminals; the rest fall back to F7/F8.
+export const ENABLE_EXTENDED_KEYS = `${ESC}>1u${ESC}>4;2m`;
+export const DISABLE_EXTENDED_KEYS = `${ESC}>4;0m${ESC}<u`;
 
 /**
  * Extract every http/https URL from a string. Used by the cell viewer to

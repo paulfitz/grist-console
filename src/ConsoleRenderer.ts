@@ -6,6 +6,7 @@ import {
   applyChoiceColor, editWindow, extractUrls,
 } from "./ConsoleDisplay.js";
 import { AppState, PaneState, activeView } from "./ConsoleAppState.js";
+import { Command, DisplayRow, buildDisplayRows, filterCommands } from "./CommandPalette.js";
 import { renderMultiPane } from "./ConsoleMultiPane.js";
 import { computeColLayout } from "./ConsoleLayout.js";
 import { formatRelativeTime } from "./SiteApi.js";
@@ -72,8 +73,8 @@ export function render(state: AppState): string {
   if (state.mode === "cell_viewer" || (state.mode === "editing" && state.cellViewerContent)) {
     return renderCellViewer(state, termRows, termCols);
   }
-  if (state.mode === "help") {
-    return renderHelp(state, termRows, termCols);
+  if (state.mode === "command_palette") {
+    return renderCommandPalette(state, termRows, termCols);
   }
   if (state.mode === "site_picker") {
     return renderSitePicker(state, termRows, termCols);
@@ -184,92 +185,115 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
 }
 
 /**
- * Static keyboard reference -- mirrors README.md but kept in code so the
- * help screen is guaranteed to ship with the binary.
+ * Render the command palette: a runnable, filterable command list. Doubles
+ * as the help screen -- the unfiltered view is the keymap reference.
+ *
+ * Layout (full screen):
+ *   title bar          "Commands  (type to filter, ↑↓ pick, Enter run, Esc close)"
+ *   query line         "> add"
+ *   filtered list      one row per command, with bindings right-aligned
+ *   help bar           "Tab:complete  Enter:run  Esc:close  ^C:quit"
+ *   status line        any pending status / cell-truncation message
  */
-const HELP_LINES: string[] = [
-  "",
-  "  PICKERS  (site / pages / tables)",
-  "    ↑ ↓                Move",
-  "    Enter              Open",
-  "    Tab                Swap pages ↔ tables",
-  "    s                  Site list (when launched against a site)",
-  "    T  /  F12          Cycle theme",
-  "    ^C  /  ^Q          Quit",
-  "",
-  "  GRID  (one or more table panes on a page)",
-  "    Arrows / Tab       Move one cell",
-  "    Page Up / Down     Scroll a page",
-  "    Home / End         First / last column of the row",
-  "    ^Home / ^End       First / last cell of the table",
-  "    ^↑ / ^↓            First / last record",
-  "    ^← / ^→            First / last column",
-  "    <type>             Edit cell, replacing its value",
-  "    Enter / F2         Edit cell, keeping its value",
-  "    Backspace          Edit with the cell empty",
-  "    Delete             Clear the cell",
-  "    ^Enter / F7        Add a row",
-  "    ^Delete / F8       Delete the row",
-  "    F3                 Open the full-cell viewer",
-  "    F6 / Shift-F6      Next / previous pane",
-  "    Alt+1 ... Alt+9    Open a collapsed widget full-screen",
-  "    ^Z                 Undo (this session)",
-  "    ^Y / ^Shift+Z      Redo",
-  "    ^R / F5            Refresh",
-  "    F4                 Tables picker",
-  "    Esc                Pages picker",
-  "    F12                Cycle theme",
-  "    ^Q / ^C            Quit",
-  "",
-  "  CARD  (one record per page, fields stacked)",
-  "    ↑ ↓                Previous / next field",
-  "    ← → / ^↑↓ / PgUp/Dn   Flip records",
-  "    Type / Enter       Edit, same as grid",
-  "",
-  "  CELL VIEWER  (F3)",
-  "    ↑↓ / PgUp/Dn / Home/End   Scroll content",
-  "    Tab / Shift-Tab           Cycle URLs in the cell",
-  "    Enter                     Open URL or start editing",
-  "    Esc / F3                  Close",
-  "",
-  "  EDITING A CELL",
-  "    Enter              Save",
-  "    Esc                Cancel",
-  "    ← → / Home / End   Move within the text",
-  "",
-  "  BOOLEAN CELLS",
-  "    Enter, Space, or any printable key flips the value.",
-  "    Backspace / Delete clears it to false.",
-  "",
-  "  HELP",
-  "    F1 or ?            Open this help",
-  "    ↑↓ / PgUp/Dn       Scroll",
-  "    Esc / F1 / ?       Close",
-  "",
-];
-
-function renderHelp(state: AppState, termRows: number, termCols: number): string {
+function renderCommandPalette(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
   const lines: string[] = [];
 
-  const title = t.pickerTitleFormat("grist-console — keys");
+  // Cap the list to a comfortable reading width so a wide terminal doesn't
+  // strand the bindings column 100 cols away from the description. Center
+  // the block horizontally on wide terminals.
+  const PALETTE_MAX_WIDTH = 90;
+  const rowWidth = Math.min(termCols, PALETTE_MAX_WIDTH);
+  const leftPad = Math.max(0, Math.floor((termCols - rowWidth) / 2));
+  const indent = " ".repeat(leftPad);
+
+  const title = t.pickerTitleFormat("Commands  (type to filter, ↑↓ pick, Enter run, Esc close)");
   lines.push(t.titleBar(padRight(title, termCols)));
 
-  const dataRows = Math.max(1, termRows - 3); // title + help bar + status
-  const maxScroll = Math.max(0, HELP_LINES.length - dataRows);
-  if (state.helpScroll > maxScroll) { state.helpScroll = maxScroll; }
-  for (let r = 0; r < dataRows; r++) {
-    const idx = state.helpScroll + r;
-    lines.push(idx < HELP_LINES.length ? padRight(HELP_LINES[idx], termCols) : "");
+  const queryLine = indent + "> " + state.paletteQuery;
+  lines.push(padRight(queryLine, termCols));
+
+  const filtered = filterCommands(state.paletteQuery, state.paletteReturnMode);
+  // Snap cursor to range so paint matches what handlePaletteKey expects.
+  if (state.paletteCursor >= filtered.length) {
+    state.paletteCursor = Math.max(0, filtered.length - 1);
   }
 
-  const scrollHint = HELP_LINES.length > dataRows
-    ? `  (${state.helpScroll + 1}-${Math.min(state.helpScroll + dataRows, HELP_LINES.length)}/${HELP_LINES.length})`
-    : "";
-  lines.push(t.helpBar(`↑↓:scroll  Esc/F1:close  ^C:quit${scrollHint}`));
+  // Reserve title + query + help-bar + status. Everything else is list.
+  const dataRows = Math.max(1, termRows - 4);
+
+  // Build the display rows (commands + group headers when unfiltered) and
+  // scroll so the focused command's display row stays in view.
+  const display = buildDisplayRows(state.paletteQuery, state.paletteReturnMode);
+  const focusedDisplayIdx = display.findIndex(
+    row => row.kind === "command" && row.filteredIdx === state.paletteCursor
+  );
+  const scroll = computePaletteScroll(
+    Math.max(0, focusedDisplayIdx), display.length, dataRows
+  );
+
+  for (let r = 0; r < dataRows; r++) {
+    const idx = scroll + r;
+    if (idx >= display.length) { lines.push(""); continue; }
+    const row = display[idx];
+    if (row.kind === "header") {
+      lines.push(indent + t.columnHeader(row.group));
+    } else {
+      const selected = row.filteredIdx === state.paletteCursor;
+      lines.push(indent + formatPaletteRow(row.cmd, selected, rowWidth, t));
+    }
+  }
+
+  const counter = filtered.length === 0 ? "  (no matches)"
+    : `  (${state.paletteCursor + 1}/${filtered.length})`;
+  lines.push(t.helpBar(`Tab:complete  Enter:run  Esc:close  ^C:quit${counter}`));
   lines.push(getStatusLine(state, termCols));
 
-  return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
+  // Park a visible cursor at the end of the query line so the user can
+  // tell the box accepts typing. Title is row 0, query is row 1; column
+  // sits after "> " and the current query text.
+  const cursorRow = 1;
+  const cursorCol = leftPad + 2 + displayWidth(state.paletteQuery);
+  return screenPreamble(t)
+    + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE
+    + SHOW_CURSOR + MOVE_TO(cursorRow, cursorCol);
+}
+
+function computePaletteScroll(cursor: number, total: number, viewRows: number): number {
+  if (total <= viewRows) { return 0; }
+  // Center the cursor when it would otherwise scroll off the bottom; clamp
+  // both ends so we always show a full page where possible.
+  const centered = cursor - Math.floor(viewRows / 2);
+  return Math.max(0, Math.min(total - viewRows, centered));
+}
+
+function formatPaletteRow(cmd: Command, selected: boolean, termCols: number, t: Theme): string {
+  // Layout: "  name        description ............ bindings  "
+  //   - 2-space indent (or "> " marker on the selected row)
+  //   - name column 22 cols
+  //   - bindings right-aligned
+  //   - description fills the middle
+  // For the selected row we wrap the whole thing in pickerSelected and
+  // skip nested coloring -- nested resets would terminate the highlight
+  // mid-row.
+  const name = padRight(cmd.name, 22);
+  const bindings = cmd.bindings;
+  // Available width for description: total - leading marker (2) - name (22)
+  //   - space (1) - bindings - trailing space (1).
+  const descAvail = Math.max(0,
+    termCols - 2 - 22 - 1 - displayWidth(bindings) - 1);
+  const desc = padRight(truncate(cmd.description, descAvail), descAvail);
+
+  if (selected) {
+    return t.pickerSelected(` > ${name} ${desc} ${bindings} `);
+  }
+  // Unselected rows: dim pure-info entries and the bindings column so the
+  // runnable commands draw the eye.
+  const dimInfo = cmd.action.type === "none";
+  const styledName = dimInfo ? t.fieldLabel(name) : name;
+  const styledDesc = dimInfo ? t.fieldLabel(desc) : desc;
+  const styledBindings = t.fieldLabel(bindings);
+  return `   ${styledName} ${styledDesc} ${styledBindings} `;
 }
 
 function renderTablePicker(state: AppState, termRows: number, termCols: number): string {

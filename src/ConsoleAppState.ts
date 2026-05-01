@@ -18,7 +18,7 @@ export type AppMode =
   | "confirm_delete"
   | "overlay"
   | "cell_viewer"
-  | "help";
+  | "command_palette";
 
 /**
  * A view of one section's data. Used for both multi-pane page layouts and
@@ -81,10 +81,13 @@ export interface AppState {
   // popped back to the picker via Ctrl-F.
   siteDocs: SiteDoc[];
   siteCursor: number;
-  // Help overlay (mode "help"). helpReturnMode is the mode to restore
-  // when the user closes help.
-  helpScroll: number;
-  helpReturnMode: AppMode;
+  // Command palette (mode "command_palette"). Doubles as the help screen:
+  // every keybinding lives here as a runnable command, and typing into the
+  // query box filters the list. paletteReturnMode is the mode to restore
+  // when the user closes the palette without picking a command.
+  paletteQuery: string;
+  paletteCursor: number;
+  paletteReturnMode: AppMode;
   /** True when the app was launched via a site URL, so the table/page
    *  pickers should offer "s" to pop back to the site picker. */
   hasSiteContext: boolean;
@@ -119,8 +122,9 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     siteDocs: [],
     siteCursor: 0,
     hasSiteContext: false,
-    helpScroll: 0,
-    helpReturnMode: "table_picker",
+    paletteQuery: "",
+    paletteCursor: 0,
+    paletteReturnMode: "table_picker",
   };
 }
 
