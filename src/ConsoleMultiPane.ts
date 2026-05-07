@@ -24,6 +24,7 @@ import {
 import { getStatusLine, isNumericType } from "./ConsoleRenderer.js";
 import { computeColLayout } from "./ConsoleLayout.js";
 import { paintGoatIntoBuffer } from "./GoatAnimation.js";
+import { formatHelpBar } from "./MouseInput.js";
 
 export function renderMultiPane(state: AppState, termRows: number, termCols: number): string {
   const t = state.theme;
@@ -81,20 +82,37 @@ export function renderMultiPane(state: AppState, termRows: number, termCols: num
   // content doesn't leave stale trailing chars from the previous render
   // (e.g. "Theme: matrix" -> "Theme: c64" leaving "rix" behind).
   const footerRow = termRows - 2;
+  let helpLine: string;
   if (state.mode === "editing") {
-    output += MOVE_TO(footerRow, 0) +
-      t.helpBar("Type to edit  Enter:save  Esc:cancel") + CLEAR_LINE;
+    helpLine = formatHelpBar(state, t, footerRow, [
+      { label: "Type to edit" },
+      { label: "Enter:save", action: { type: "save_edit" } },
+      { label: "Esc:cancel" },
+    ]);
   } else if (state.mode === "confirm_delete") {
     const pane = state.panes[state.focusedPane];
     const rowId = pane ? pane.rowIds[pane.cursorRow] : "?";
-    output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`Delete row ${rowId}? y:confirm  n/Esc:cancel`) + CLEAR_LINE;
+    helpLine = formatHelpBar(state, t, footerRow, [
+      { label: `Delete row ${rowId}?` },
+      { label: "y:confirm" },
+      { label: "n/Esc:cancel" },
+    ]);
   } else {
-    const collapsedHint = hasCollapsed ? "  Alt-#:widget" : "";
-    output += MOVE_TO(footerRow, 0) +
-      t.helpBar(`type:edit  Tab:cell  F6:pane  Enter:edit  F3:view  ^Enter:add  ^Z:undo${collapsedHint}  Esc:pages  F1:help  ^C:quit`) +
-      CLEAR_LINE;
+    helpLine = formatHelpBar(state, t, footerRow, [
+      { label: "type:edit" },
+      { label: "Tab:cell" },
+      { label: "F6:pane", action: { type: "focus_next_pane" } },
+      { label: "Enter:edit" },
+      { label: "F3:view", action: { type: "view_cell" } },
+      { label: "^Enter:add", action: { type: "add_row" } },
+      { label: "^Z:undo", action: { type: "undo" } },
+      { label: hasCollapsed ? "Alt-#:widget" : "" },
+      { label: "Esc:pages", action: { type: "switch_to_pages" } },
+      { label: "F1:help", action: { type: "view_command_palette" } },
+      { label: "^C:quit", action: { type: "quit" } },
+    ]);
   }
+  output += MOVE_TO(footerRow, 0) + helpLine + CLEAR_LINE;
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
 
   // Show terminal cursor at edit position when editing in a grid pane
@@ -152,14 +170,22 @@ function renderOverlay(
   }
 
   const footerRow = termRows - 2;
-  if (state.mode === "editing") {
-    output += MOVE_TO(footerRow, 0) +
-      t.helpBar("Type to edit  Enter:save  Esc:cancel") + CLEAR_LINE;
-  } else {
-    output += MOVE_TO(footerRow, 0) +
-      t.helpBar("\u2191\u2193\u2190\u2192:move  Enter:edit  v:view  Esc:close  a:add  d:del  ^C:quit") +
-      CLEAR_LINE;
-  }
+  const helpLine = state.mode === "editing"
+    ? formatHelpBar(state, t, footerRow, [
+        { label: "Type to edit" },
+        { label: "Enter:save", action: { type: "save_edit" } },
+        { label: "Esc:cancel" },
+      ])
+    : formatHelpBar(state, t, footerRow, [
+        { label: "\u2191\u2193\u2190\u2192:move" },
+        { label: "Enter:edit" },
+        { label: "v:view", action: { type: "view_cell" } },
+        { label: "Esc:close", action: { type: "close_overlay" } },
+        { label: "a:add", action: { type: "add_row" } },
+        { label: "d:del", action: { type: "delete_row" } },
+        { label: "^C:quit", action: { type: "quit" } },
+      ]);
+  output += MOVE_TO(footerRow, 0) + helpLine + CLEAR_LINE;
   output += MOVE_TO(termRows - 1, 0) + getStatusLine(state, termCols) + CLEAR_LINE;
 
   // Show terminal cursor when editing in overlay

@@ -297,6 +297,22 @@ state catches up with anything you changed.
 
 </details>
 
+<details>
+<summary>Mouse</summary>
+
+| Action | What happens |
+|--------|--------------|
+| Click a cell | Focus that pane and move the cursor |
+| Click a list row | Move the picker cursor (click again to open) |
+| Wheel | Scroll the view under the pointer |
+| Shift+drag (Option+drag on macOS) | Native text selection, for copy |
+
+The terminal grabs your drags so the program can see clicks, which means
+ordinary drag-to-select is hidden behind the modifier key. Most terminals
+do this for you out of the box.
+
+</details>
+
 ## Building from source
 
 ```bash

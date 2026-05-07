@@ -91,6 +91,19 @@ export interface AppState {
   /** True when the app was launched via a site URL, so the table/page
    *  pickers should offer "s" to pop back to the site picker. */
   hasSiteContext: boolean;
+  /** Clickable regions in the bottom help bar, refilled by the renderer
+   *  on every paint. */
+  helpHits: HelpHit[];
+  /** 0-based screen row that hosts the help bar; -1 if none drawn. */
+  helpHitRow: number;
+}
+
+export interface HelpHit {
+  x: number;
+  width: number;
+  /** Typed `any` because the concrete InputAction type lives in
+   *  ConsoleInput, which depends on this file. */
+  action: any;
 }
 
 export function createInitialState(docId: string, theme?: Theme): AppState {
@@ -125,6 +138,8 @@ export function createInitialState(docId: string, theme?: Theme): AppState {
     paletteQuery: "",
     paletteCursor: 0,
     paletteReturnMode: "table_picker",
+    helpHits: [],
+    helpHitRow: -1,
   };
 }
 

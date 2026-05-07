@@ -49,6 +49,16 @@ export const ANSI_RESET = "\x1b[0m";
 // Together these cover most modern terminals; the rest fall back to F7/F8.
 export const ENABLE_EXTENDED_KEYS = `${ESC}>1u${ESC}>4;2m`;
 export const DISABLE_EXTENDED_KEYS = `${ESC}>4;0m${ESC}<u`;
+// Mouse reporting. ?1000 reports button presses, releases, and wheel
+// events; ?1006 switches to SGR encoding so coordinates above column
+// 223 work and the trailing M/m disambiguates press from release.
+// Together that's enough for click + wheel; we don't ask for motion
+// (?1002 / ?1003) since we only act on click endpoints.
+// Holding Shift (Linux/Windows) or Option (macOS) bypasses mouse
+// reporting in most terminals, giving the user back native text
+// selection -- so we don't need to toggle mouse off to allow copy.
+export const ENABLE_MOUSE = `${ESC}?1000h${ESC}?1006h`;
+export const DISABLE_MOUSE = `${ESC}?1006l${ESC}?1000l`;
 
 /**
  * Extract every http/https URL from a string. Used by the cell viewer to

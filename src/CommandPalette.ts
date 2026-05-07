@@ -125,6 +125,17 @@ export const COMMANDS: Command[] = [
     bindings: "Esc  /  F3",
     action: { type: "none" }, availableIn: ["cell_viewer"], group: "Cell viewer" },
 
+  // ── Mouse (info-only) ──
+  { name: "mouse-click",    description: "Click a cell or list row to focus it",
+    bindings: "click",
+    action: { type: "none" }, group: "Mouse" },
+  { name: "mouse-wheel",    description: "Scroll the view under the pointer",
+    bindings: "wheel",
+    action: { type: "none" }, group: "Mouse" },
+  { name: "mouse-select",   description: "Hold Shift (or Option on macOS) and drag to select text",
+    bindings: "Shift+drag",
+    action: { type: "none" }, group: "Mouse" },
+
   // ── Session ──
   { name: "theme",          description: "Cycle to the next color theme",
     bindings: "T  /  F12",
@@ -178,6 +189,16 @@ export function filterCommands(query: string, mode: AppMode): Command[] {
     return cmd.name.toLowerCase().includes(q)
         || cmd.description.toLowerCase().includes(q);
   });
+}
+
+/**
+ * Where to start drawing the palette so the cursor stays in view. Centers
+ * the cursor when possible and clamps both ends so a full page is shown.
+ */
+export function computePaletteScroll(cursor: number, total: number, viewRows: number): number {
+  if (total <= viewRows) { return 0; }
+  const centered = cursor - Math.floor(viewRows / 2);
+  return Math.max(0, Math.min(total - viewRows, centered));
 }
 
 /**

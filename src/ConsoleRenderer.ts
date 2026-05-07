@@ -6,9 +6,10 @@ import {
   applyChoiceColor, editWindow, extractUrls,
 } from "./ConsoleDisplay.js";
 import { AppState, PaneState, activeView } from "./ConsoleAppState.js";
-import { Command, DisplayRow, buildDisplayRows, filterCommands } from "./CommandPalette.js";
+import { Command, DisplayRow, buildDisplayRows, computePaletteScroll, filterCommands } from "./CommandPalette.js";
 import { renderMultiPane } from "./ConsoleMultiPane.js";
 import { computeColLayout } from "./ConsoleLayout.js";
+import { clearHelpHits, formatHelpBar } from "./MouseInput.js";
 import { formatRelativeTime } from "./SiteApi.js";
 import { renderGoatOverlay, goatStatus } from "./GoatAnimation.js";
 import { isGoatTheme } from "./ConsoleTheme.js";
@@ -69,6 +70,9 @@ export function isNumericType(colType: string): boolean {
 export function render(state: AppState): string {
   const termRows = process.stdout.rows || 24;
   const termCols = process.stdout.columns || 80;
+  // Each render rebuilds the help bar from scratch, so clear any
+  // stale click hits left by the previous frame.
+  clearHelpHits(state);
 
   if (state.mode === "cell_viewer" || (state.mode === "editing" && state.cellViewerContent)) {
     return renderCellViewer(state, termRows, termCols);
@@ -141,14 +145,24 @@ function renderCellViewer(state: AppState, termRows: number, termCols: number): 
   const scrollInfo = wrappedLines.length > dataRows
     ? `  (${state.cellViewerScroll + 1}-${Math.min(state.cellViewerScroll + dataRows, wrappedLines.length)}/${wrappedLines.length})`
     : "";
+  const footerRow = termRows - 2;
   if (isEditing) {
-    lines.push(t.helpBar(`Type to edit  Enter:save  Esc:cancel${scrollInfo}`));
+    lines.push(formatHelpBar(state, t, footerRow, [
+      { label: "Type to edit" },
+      { label: "Enter:save", action: { type: "save_edit" } },
+      { label: `Esc:cancel${scrollInfo}` },
+    ]));
     lines.push("");
   } else {
     const urls = extractUrls(state.cellViewerContent);
-    const urlHint = urls.length > 0 ? "  Tab:link" : "";
     const enterHint = state.cellViewerLinkIndex >= 0 ? "Enter:open" : "Enter:edit";
-    lines.push(t.helpBar(`\u2191\u2193:scroll  ${enterHint}${urlHint}  Esc:close  ^C:quit${scrollInfo}`));
+    lines.push(formatHelpBar(state, t, footerRow, [
+      { label: "\u2191\u2193:scroll" },
+      { label: enterHint },
+      { label: urls.length > 0 ? "Tab:link" : "" },
+      { label: "Esc:close" },
+      { label: `^C:quit${scrollInfo}`, action: { type: "quit" } },
+    ]));
     if (state.cellViewerLinkIndex >= 0 && state.cellViewerLinkIndex < urls.length) {
       lines.push(`link ${state.cellViewerLinkIndex + 1}/${urls.length}: ${urls[state.cellViewerLinkIndex]}`);
     } else {
@@ -246,7 +260,12 @@ function renderCommandPalette(state: AppState, termRows: number, termCols: numbe
 
   const counter = filtered.length === 0 ? "  (no matches)"
     : `  (${state.paletteCursor + 1}/${filtered.length})`;
-  lines.push(t.helpBar(`Tab:complete  Enter:run  Esc:close  ^C:quit${counter}`));
+  lines.push(formatHelpBar(state, t, termRows - 2, [
+    { label: "Tab:complete" },
+    { label: "Enter:run" },
+    { label: "Esc:close", action: { type: "close_command_palette" } },
+    { label: `^C:quit${counter}`, action: { type: "quit" } },
+  ]));
   lines.push(getStatusLine(state, termCols));
 
   // Park a visible cursor at the end of the query line so the user can
@@ -257,14 +276,6 @@ function renderCommandPalette(state: AppState, termRows: number, termCols: numbe
   return screenPreamble(t)
     + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE
     + SHOW_CURSOR + MOVE_TO(cursorRow, cursorCol);
-}
-
-function computePaletteScroll(cursor: number, total: number, viewRows: number): number {
-  if (total <= viewRows) { return 0; }
-  // Center the cursor when it would otherwise scroll off the bottom; clamp
-  // both ends so we always show a full page where possible.
-  const centered = cursor - Math.floor(viewRows / 2);
-  return Math.max(0, Math.min(total - viewRows, centered));
 }
 
 function formatPaletteRow(cmd: Command, selected: boolean, termCols: number, t: Theme): string {
@@ -323,10 +334,17 @@ function renderTablePicker(state: AppState, termRows: number, termCols: number):
     lines.push("");
   }
 
-  // Key help
-  const pagesHint = state.pages.length > 0 ? "  Tab:pages" : "";
-  const siteHint = state.hasSiteContext ? "  s:site" : "";
-  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open${pagesHint}${siteHint}  T:theme  F1:help  ^C:quit`));
+  lines.push(formatHelpBar(state, t, termRows - 2, [
+    { label: "\u2191\u2193:select" },
+    { label: "Enter:open", action: { type: "select_table" } },
+    { label: state.pages.length > 0 ? "Tab:pages" : "",
+      action: { type: "switch_to_pages" } },
+    { label: state.hasSiteContext ? "s:site" : "",
+      action: { type: "switch_to_site" } },
+    { label: "T:theme", action: { type: "cycle_theme" } },
+    { label: "F1:help", action: { type: "view_command_palette" } },
+    { label: "^C:quit", action: { type: "quit" } },
+  ]));
 
   // Status
   lines.push(getStatusLine(state, termCols));
@@ -421,14 +439,33 @@ function renderGrid(state: AppState, termRows: number, termCols: number): string
     lines.push("");
   }
 
-  // Key help
+  const footerRow = termRows - 2;
   if (state.mode === "editing") {
-    lines.push(t.helpBar("Type to edit  Enter:save  Esc:cancel"));
+    lines.push(formatHelpBar(state, t, footerRow, [
+      { label: "Type to edit" },
+      { label: "Enter:save", action: { type: "save_edit" } },
+      { label: "Esc:cancel" },
+    ]));
   } else if (state.mode === "confirm_delete") {
-    lines.push(t.helpBar(`Delete row ${pane.rowIds[pane.cursorRow]}? y:confirm  n/Esc:cancel`));
+    lines.push(formatHelpBar(state, t, footerRow, [
+      { label: `Delete row ${pane.rowIds[pane.cursorRow]}?` },
+      { label: "y:confirm" },
+      { label: "n/Esc:cancel" },
+    ]));
   } else {
-    const pagesHint = state.pages.length > 0 ? "  Esc:pages" : "";
-    lines.push(t.helpBar(`type:edit  Enter:edit  F3:view  ^Enter:add  ^Del:del  ^Z:undo  F4:tables${pagesHint}  F1:help  ^C:quit`));
+    lines.push(formatHelpBar(state, t, footerRow, [
+      { label: "type:edit" },
+      { label: "Enter:edit" },
+      { label: "F3:view", action: { type: "view_cell" } },
+      { label: "^Enter:add", action: { type: "add_row" } },
+      { label: "^Del:del", action: { type: "delete_row" } },
+      { label: "^Z:undo", action: { type: "undo" } },
+      { label: "F4:tables", action: { type: "switch_to_tables" } },
+      { label: state.pages.length > 0 ? "Esc:pages" : "",
+        action: { type: "switch_to_pages" } },
+      { label: "F1:help", action: { type: "view_command_palette" } },
+      { label: "^C:quit", action: { type: "quit" } },
+    ]));
   }
 
   // Status
@@ -502,7 +539,13 @@ function renderSitePicker(state: AppState, termRows: number, termCols: number): 
   }
   while (lines.length < termRows - 2) { lines.push(""); }
 
-  lines.push(t.helpBar("↑↓:select  Enter:open  T:theme  F1:help  ^C:quit"));
+  lines.push(formatHelpBar(state, t, termRows - 2, [
+    { label: "↑↓:select" },
+    { label: "Enter:open", action: { type: "select_doc" } },
+    { label: "T:theme", action: { type: "cycle_theme" } },
+    { label: "F1:help", action: { type: "view_command_palette" } },
+    { label: "^C:quit", action: { type: "quit" } },
+  ]));
   lines.push(getStatusLine(state, termCols));
 
   return screenPreamble(t) + lines.join(CLEAR_LINE + "\r\n") + CLEAR_LINE;
@@ -531,8 +574,16 @@ function renderPagePicker(state: AppState, termRows: number, termCols: number): 
     lines.push("");
   }
 
-  const siteHint = state.hasSiteContext ? "  s:site" : "";
-  lines.push(t.helpBar(`\u2191\u2193:select  Enter:open  Tab:tables${siteHint}  T:theme  F1:help  ^C:quit`));
+  lines.push(formatHelpBar(state, t, termRows - 2, [
+    { label: "\u2191\u2193:select" },
+    { label: "Enter:open", action: { type: "select_page" } },
+    { label: "Tab:tables", action: { type: "switch_to_tables" } },
+    { label: state.hasSiteContext ? "s:site" : "",
+      action: { type: "switch_to_site" } },
+    { label: "T:theme", action: { type: "cycle_theme" } },
+    { label: "F1:help", action: { type: "view_command_palette" } },
+    { label: "^C:quit", action: { type: "quit" } },
+  ]));
   lines.push(getStatusLine(state, termCols));
 
   // Clear to end of line after each line to overwrite any stale content

@@ -10,6 +10,7 @@ import { render } from "../src/ConsoleRenderer.js";
 import { displayWidth, flattenToLine, applyChoiceColor, editWindow, stripAnsi } from "../src/ConsoleDisplay.js";
 import { _setFlagPairDelta, _setVs16Delta, _resetProbes, countFlagPairs, countZwjs, hasProbed, probeChar } from "../src/termWidth.js";
 import { handleKeypress, ensureColVisible } from "../src/ConsoleInput.js";
+import { parseMouseEvent } from "../src/MouseInput.js";
 import { getVisualPaneOrder, clearViewState } from "../src/ConsoleMain.js";
 import { getThemeNames, getTheme } from "../src/ConsoleTheme.js";
 import { stepGoat, resetGoat, getGoat, goatStatus, renderGoatOverlay } from "../src/GoatAnimation.js";
@@ -3197,6 +3198,257 @@ describe("ConsoleClient", function() {
       assert.equal(s.statusMessage, "hi");
       assert.deepEqual(s.undoStack, [{ actionNum: 1, actionHash: "h1" }]);
       assert.equal(s.undoPointer, 1);
+    });
+  });
+
+  describe("parseMouseEvent (SGR mouse decoding)", function() {
+    it("decodes a left-click press", function() {
+      // ESC [ < 0 ; 5 ; 10 M  -- left button at col 5, row 10
+      const buf = Buffer.from("\x1b[<0;5;10M");
+      const r = parseMouseEvent(buf);
+      assert.isNotNull(r);
+      assert.deepEqual(r!.event, {
+        button: 0, x: 5, y: 10, press: true,
+        shift: false, alt: false, ctrl: false,
+      });
+      assert.equal(r!.consumed, buf.length);
+    });
+
+    it("decodes a left-click release (lowercase m)", function() {
+      const r = parseMouseEvent(Buffer.from("\x1b[<0;5;10m"));
+      assert.isNotNull(r);
+      assert.isFalse(r!.event.press);
+    });
+
+    it("decodes wheel-up (button 64) and wheel-down (button 65)", function() {
+      const up = parseMouseEvent(Buffer.from("\x1b[<64;1;1M"));
+      assert.equal(up!.event.button, 64);
+      const down = parseMouseEvent(Buffer.from("\x1b[<65;1;1M"));
+      assert.equal(down!.event.button, 65);
+    });
+
+    it("strips modifier bits and motion bit from the button", function() {
+      // 0 + shift(4) + alt(8) + ctrl(16) + motion(32) = 60
+      const r = parseMouseEvent(Buffer.from("\x1b[<60;1;1M"));
+      assert.isNotNull(r);
+      assert.equal(r!.event.button, 0);
+      assert.isTrue(r!.event.shift);
+      assert.isTrue(r!.event.alt);
+      assert.isTrue(r!.event.ctrl);
+    });
+
+    it("returns null for non-mouse buffers", function() {
+      assert.isNull(parseMouseEvent(Buffer.from("a")));
+      assert.isNull(parseMouseEvent(Buffer.from("\x1b[A")));        // up arrow
+      assert.isNull(parseMouseEvent(Buffer.from("\x1b[<0;5;10")));  // truncated
+    });
+  });
+
+  describe("mouse dispatch", function() {
+    it("left click in table picker moves cursor to clicked row", function() {
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A", "B", "C", "D"];
+      state.selectedTableIndex = 0;
+      // Picker layout: row 0 = title, row 1 = blank, items at row 2+.
+      // Click on screen row 5 (1-based y=5) = list slot 2 -> "C".
+      const action = handleKeypress(Buffer.from("\x1b[<0;3;5M"), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.selectedTableIndex, 2);
+    });
+
+    it("clicking the already-selected picker row activates it", function() {
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A", "B", "C"];
+      state.selectedTableIndex = 1;
+      // Slot 1 = screen row 4 (1-based y=4: title=1, blank=2, item0=3, item1=4).
+      const action = handleKeypress(Buffer.from("\x1b[<0;3;4M"), state);
+      assert.equal(action.type, "select_table");
+    });
+
+    it("ignores button-release events", function() {
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A", "B"];
+      state.selectedTableIndex = 0;
+      const action = handleKeypress(Buffer.from("\x1b[<0;3;5m"), state);
+      // Lowercase m = release; we only act on press.
+      assert.equal(action.type, "none");
+      assert.equal(state.selectedTableIndex, 0);
+    });
+
+    it("wheel-down advances the page picker cursor", function() {
+      const state = createInitialState("doc");
+      state.mode = "page_picker";
+      state.pages = Array.from({ length: 10 }, (_, i) => ({
+        pageId: i + 1, viewId: i + 1, name: `P${i}`, indentation: 0,
+      }));
+      state.selectedPageIndex = 0;
+      const action = handleKeypress(Buffer.from("\x1b[<65;1;1M"), state);
+      assert.equal(action.type, "render");
+      assert.isAbove(state.selectedPageIndex, 0);
+    });
+
+    it("ignores mouse in editing mode (don't yank user mid-edit)", function() {
+      const state = createInitialState("doc");
+      state.mode = "editing";
+      state.editValue = "hello";
+      state.editCursorPos = 5;
+      const action = handleKeypress(Buffer.from("\x1b[<0;3;5M"), state);
+      assert.equal(action.type, "none");
+      // Edit buffer untouched.
+      assert.equal(state.editValue, "hello");
+      assert.equal(state.editCursorPos, 5);
+    });
+
+    it("click in tray opens that pane in overlay", function() {
+      const state = createInitialState("doc");
+      state.mode = "grid";
+      // Two panes with sectionInfo so paneTitle resolves to a tableId.
+      state.panes = [
+        makePane({
+          columns: [], rowIds: [], colValues: {},
+          sectionInfo: { sectionId: 1, tableRef: 1, tableId: "Alpha", parentKey: "record",
+            title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "" },
+        }),
+        makePane({
+          columns: [], rowIds: [], colValues: {},
+          sectionInfo: { sectionId: 2, tableRef: 2, tableId: "Bravo", parentKey: "record",
+            title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "" },
+        }),
+      ];
+      state.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
+      state.collapsedPaneIndices = [0, 1];
+      // Tray is on row 0 (1-based y=1). First pill " 1:Alpha " is 9 cells
+      // wide; click around the middle (1-based x=4).
+      const action = handleKeypress(Buffer.from("\x1b[<0;4;1M"), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.mode, "overlay");
+      assert.equal(state.overlayPaneIndex, 0);
+    });
+
+    it("click on second tray pill opens that pane", function() {
+      const state = createInitialState("doc");
+      state.mode = "grid";
+      state.panes = [
+        makePane({
+          columns: [], rowIds: [], colValues: {},
+          sectionInfo: { sectionId: 1, tableRef: 1, tableId: "Alpha", parentKey: "record",
+            title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "" },
+        }),
+        makePane({
+          columns: [], rowIds: [], colValues: {},
+          sectionInfo: { sectionId: 2, tableRef: 2, tableId: "Bravo", parentKey: "record",
+            title: "", linkSrcSectionRef: 0, linkSrcColRef: 0, linkTargetColRef: 0, sortColRefs: "" },
+        }),
+      ];
+      state.layout = { top: 0, left: 0, width: 80, height: 22, paneIndex: 0 };
+      state.collapsedPaneIndices = [0, 1];
+      // First pill " 1:Alpha " = 9 cells, plus 1-cell gap = ends at x=10
+      // (0-based). Second pill starts at 0-based x=10 → 1-based x=11.
+      const action = handleKeypress(Buffer.from("\x1b[<0;13;1M"), state);
+      assert.equal(action.type, "render");
+      assert.equal(state.mode, "overlay");
+      assert.equal(state.overlayPaneIndex, 1);
+    });
+
+    it("palette click on a runnable command activates it on the second click", function() {
+      const state = createInitialState("doc");
+      state.paletteReturnMode = "grid";
+      state.mode = "command_palette";
+      state.paletteQuery = "quit";
+      state.paletteCursor = 0;
+      // First click should focus -- with single match, cursor is already 0,
+      // so the click activates immediately. Use that to assert the
+      // dispatch path returns the command's action.
+      // y=3 = 1-based row 3 = list slot 0.
+      const action = handleKeypress(Buffer.from("\x1b[<0;5;3M"), state);
+      assert.equal(action.type, "quit");
+    });
+
+    it("click on a help-bar item dispatches its action", function() {
+      // First render the picker so the help bar registers its hits, then
+      // click on the corresponding x range.
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A", "B"];
+      // Force a known terminal size so the help-bar row is predictable.
+      const origRows = process.stdout.rows;
+      const origCols = process.stdout.columns;
+      Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true });
+      Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
+      try {
+        render(state);
+        // helpHitRow should be 22 (termRows-2). Find the "F1:help" hit
+        // and click its midpoint.
+        assert.equal(state.helpHitRow, 22);
+        const f1 = state.helpHits.find(h => h.action?.type === "view_command_palette");
+        assert.isOk(f1, "F1:help should be registered");
+        const midX = f1!.x + Math.floor(f1!.width / 2);
+        // SGR mouse: ESC[<0;X+1;Y+1M  (1-based)
+        const action = handleKeypress(
+          Buffer.from(`\x1b[<0;${midX + 1};${state.helpHitRow + 1}M`), state);
+        assert.equal(action.type, "view_command_palette");
+      } finally {
+        Object.defineProperty(process.stdout, "rows", { value: origRows, configurable: true });
+        Object.defineProperty(process.stdout, "columns", { value: origCols, configurable: true });
+      }
+    });
+
+    it("click on a non-clickable help label is a no-op", function() {
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A", "B"];
+      const origRows = process.stdout.rows;
+      const origCols = process.stdout.columns;
+      Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true });
+      Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
+      try {
+        render(state);
+        // "↑↓:select" is the first label and has no action; it sits at
+        // x=0. Click at x=0 should fall through to no help-bar dispatch.
+        // (Picker click logic would also reject row 22 since slot would
+        // be 20, beyond the visible items.)
+        const action = handleKeypress(
+          Buffer.from(`\x1b[<0;1;${state.helpHitRow + 1}M`), state);
+        // Not a help-bar hit, and the (slot=20) is past tableIds.length,
+        // so picker dispatch returns none.
+        assert.equal(action.type, "none");
+      } finally {
+        Object.defineProperty(process.stdout, "rows", { value: origRows, configurable: true });
+        Object.defineProperty(process.stdout, "columns", { value: origCols, configurable: true });
+      }
+    });
+
+    it("each render rebuilds help hits (no stale entries)", function() {
+      const state = createInitialState("doc");
+      state.mode = "table_picker";
+      state.tableIds = ["A"];
+      render(state);
+      const before = state.helpHits.length;
+      assert.isAbove(before, 0, "table picker should register hits");
+      // Switch modes; site picker has fewer entries (no Tab:pages,
+      // no s:site since hasSiteContext=false).
+      state.mode = "site_picker";
+      state.siteDocs = [];
+      render(state);
+      assert.notEqual(state.helpHits.length, 0);
+      // No Tab:pages from the prior frame should leak through.
+      assert.isUndefined(
+        state.helpHits.find(h => h.action?.type === "switch_to_pages"));
+    });
+
+    it("palette click on a header row is a no-op", function() {
+      const state = createInitialState("doc");
+      state.paletteReturnMode = "grid";
+      state.mode = "command_palette";
+      state.paletteQuery = "";
+      state.paletteCursor = 0;
+      // With an empty query, the first display row is a group header.
+      // y=3 = list slot 0 = the header.
+      const action = handleKeypress(Buffer.from("\x1b[<0;5;3M"), state);
+      assert.equal(action.type, "none");
     });
   });
 });

@@ -4,6 +4,7 @@ import { displayWidth, extractUrls } from "./ConsoleDisplay.js";
 import { collectLeaves, computeColLayout, LayoutNode } from "./ConsoleLayout.js";
 import { formatCellValue } from "./ConsoleCellFormat.js";
 import { getBaseType } from "./types.js";
+import { handleMouseEvent, parseMouseEvent } from "./MouseInput.js";
 
 /**
  * Ensure scrollCol is adjusted so cursorCol is visible.
@@ -1099,8 +1100,17 @@ function handleOverlayKey(key: string, state: AppState): InputAction {
 
 /**
  * Process a raw keypress buffer and return the action to take.
+ *
+ * Mouse events arrive in the same stdin stream as keys, so we sniff for
+ * an SGR mouse sequence first. If multiple events arrived together
+ * (common with fast wheel scrolling), only the first is acted on -- the
+ * tail is dropped, which keeps wheel-scroll from feeling glued. Letting
+ * each tick drive its own render keeps the UI responsive.
  */
 export function handleKeypress(buf: Buffer, state: AppState): InputAction {
+  const mouse = parseMouseEvent(buf);
+  if (mouse) { return handleMouseEvent(mouse.event, state); }
+
   const key = parseKey(buf);
   // Global trigger for the command palette (which doubles as help).
   // F1, ?, Ctrl+P, and `:` all work outside editing -- in grid/card the
