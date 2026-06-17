@@ -4,6 +4,10 @@ A spreadsheet in your terminal, talking to a [Grist](https://www.getgrist.com/) 
 
 This is a fun side project, not a serious productivity tool. There is a goat theme.
 
+<p align="center">
+  <img src="docs/demo/demo.gif" alt="grist-console: open a public Grist doc, walk a multi-pane page, hop to another document, flip through the themes, and let the goat loose" width="900">
+</p>
+
 ## Trying it out
 
 You need Node. Open a terminal and run:
